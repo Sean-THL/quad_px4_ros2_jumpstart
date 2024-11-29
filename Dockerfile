@@ -8,7 +8,9 @@ FROM ubuntu:22.04
 ## necessary tooling for px4
 RUN apt-get update 
 RUN apt-get install -y python3 python3-dev python3-pip
-RUN python3 -m pip install --user -U empy pyros-genmsg setuptools
+# Downgrade setuptools to a compatible version
+RUN python3 -m pip install setuptools==58.2.0
+RUN python3 -m pip install --user -U empy pyros-genmsg
 
 RUN apt-get install -y git vim
 

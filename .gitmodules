@@ -13,3 +13,6 @@
 [submodule "colcon_ws/src/dasc_ros_common"]
 	path = colcon_ws/src/dasc_ros_common
 	url = git@github.com:kalebbennaveed/dasc_ros_common.git
+[submodule "colcon_ws/src/julia_common_exp"]
+	path = colcon_ws/src/julia_common_exp
+	url = git@github.com:kalebbennaveed/julia_common_exp.git
