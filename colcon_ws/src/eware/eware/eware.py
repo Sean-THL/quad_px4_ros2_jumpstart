@@ -20,7 +20,7 @@ class Eware(Node):
 
         # Declare all parameters
         self.get_logger().info("Initializing params")
-        self.mode = "Grounded"
+        self.mode = "Stopped"
         self.CandTraj_update_rate = 1.0 # Hz
         self.SetpointPub_update_rate = 20.0 # Hz
 
@@ -41,24 +41,34 @@ class Eware(Node):
     def mission_status(self, mission_status_msg):
         self.get_logger().info("Checking msg")
         if (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == False):
-            # If the timers aren't already running, start them
-            if self.CandTraj_Timer_ is None and self.SetpointPub_Timer_ is None:
-                self.start_timers()
-                self.mode = "Mission"
-                self.get_logger().info("Starting Mission")
-        # elif (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == True):
-        #     ## Stop the timer and and move the quadrotor to the landing mode
-        #     self.mode = "Stopped"
+            self.start_timers()
+            self.mode = "Mission"
+            self.get_logger().info("Starting Mission")
         elif (mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True):
-            self.mode = "Stop"
-            ## TODO: Stop the timer and move to land mode
-        else:
-            self.get_logger().info("Already at Ground")
+            self.mode = "Stopped"
+            self.stop_timers()
+            self.get_logger().info("Mission Stopped; Landing")
+
 
     def start_timers(self):
-        self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
-        self.SetpointPub_Timer_ = self.create_timer(1 / self.SetpointPub_update_rate, self.Setpoint_callback)
+        # If the timers aren't already running, start them
+        if self.CandTraj_Timer_ is None:
+            self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
+        if self.SetpointPub_Timer_ is None:
+            self.SetpointPub_Timer_ = self.create_timer(1 / self.SetpointPub_update_rate, self.Setpoint_callback)
         self.get_logger().info('Timers Started')
+
+
+    def stop_timers(self):
+        # if the timers aren't already stopped, stop them
+        if self.CandTraj_Timer_ is not None:
+            self.CandTraj_Timer_.destroy()
+            self.CandTraj_Timer_ = None
+        if self.SetpointPub_Timer_ is not None:
+            self.SetpointPub_Timer_.destroy()
+            self.SetpointPub_Timer_ = None
+        self.get_logger().info('Timers stopped')
+
 
 
     def CandTraj_callback(self):
