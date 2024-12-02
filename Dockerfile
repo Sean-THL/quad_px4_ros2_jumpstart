@@ -66,7 +66,7 @@ RUN /root/julia_install/julia-1.11.1/bin/julia install.jl
 # Set environment variable for JuliaCall to offline mode
 ENV PYTHON_JULIAPKG_EXE=/root/julia_install/julia-1.11.1/bin/julia
 ENV PYTHON_JULIAPKG_OFFLINE=yes
-
+WORKDIR /home/colcon_ws
 # Install python requirements
 # WORKDIR $OVERLAY_WS
 # RUN pip3 install -r py_requirements.txt
