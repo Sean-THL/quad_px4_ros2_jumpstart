@@ -50,36 +50,31 @@ class Eware(Node):
         )
 
     def mission_status(self, mission_status_msg):
-        self.get_logger().info("Checking msg")
+        # self.get_logger().info("Checking msg")
         if (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == False):
-            self.start_timers()
-            self.mode = "Mission"
-            self.get_logger().info("Starting Mission")
+            # If the timers aren't already running, start them
+            if self.CandTraj_Timer_ is None and self.SetpointPub_Timer_ is None:
+                self.start_timers()
+                self.mode = "Mission"
         elif (mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True):
-            self.mode = "Stopped"
-            self.stop_timers()
-            self.get_logger().info("Mission Stopped; Landing")
+            if self.CandTraj_Timer_ is not None and self.SetpointPub_Timer_ is not None:
+                self.mode = "Stopped"
+                self.stop_timers()
 
 
     def start_timers(self):
-        # If the timers aren't already running, start them
-        if self.CandTraj_Timer_ is None:
-            self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
-        if self.SetpointPub_Timer_ is None:
-            self.SetpointPub_Timer_ = self.create_timer(1 / self.SetpointPub_update_rate, self.Setpoint_callback)
+        self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
+        self.SetpointPub_Timer_ = self.create_timer(1 / self.SetpointPub_update_rate, self.Setpoint_callback)
         self.get_logger().info('Timers Started')
-
+        self.get_logger().info("Starting Mission")
 
     def stop_timers(self):
-        # if the timers aren't already stopped, stop them
-        if self.CandTraj_Timer_ is not None:
-            self.CandTraj_Timer_.destroy()
-            self.CandTraj_Timer_ = None
-        if self.SetpointPub_Timer_ is not None:
-            self.SetpointPub_Timer_.destroy()
-            self.SetpointPub_Timer_ = None
+        self.CandTraj_Timer_.destroy()
+        self.CandTraj_Timer_ = None
+        self.SetpointPub_Timer_.destroy()
+        self.SetpointPub_Timer_ = None
         self.get_logger().info('Timers stopped')
-
+        self.get_logger().info("Mission Stopped; Landing")
 
     def CandTraj_callback(self):
         self.get_logger().info('Generating new Candidate Trajectory')
