@@ -16,13 +16,16 @@ from visualization_msgs.msg import Marker
 ## Julia call
 from juliacall import Main as jl
 
-
 '''
 Flight Preview Current Version (V1):
 - The flight preview button currently verifies the ros and px4 communication stack.
 - Ensures that ros communication works fine
 - Expected behaviour: The quadrotor will keep on starting candidate trajectory from the same initial state
 
+Things to test:
+- Mission turn on and off tested
+- Timers truned on and off tested
+- Timers testing 
 '''
 
 class Eware(Node):
@@ -42,6 +45,7 @@ class Eware(Node):
         self.SetpointPub_Timer_ = None
         self.curr_battery_SoC_ = 60.0
         self.curr_SoC_ = self.curr_battery_SoC_
+        self.start_time_ = None 
 
         # Pubs
 
@@ -67,6 +71,9 @@ class Eware(Node):
 
 
     def start_timers(self):
+
+        # Record the start time
+        self.start_time_ = time.time()
         self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
         self.SetpointPub_Timer_ = self.create_timer(1 / self.SetpointPub_update_rate, self.Setpoint_callback)
         self.get_logger().info('Timers Started')
@@ -81,7 +88,11 @@ class Eware(Node):
         self.get_logger().info("Mission Stopped; Landing")
 
     def CandTraj_callback(self):
-        self.get_logger().info('Generating new Candidate Trajectory')
+        # self.get_logger().info('Generating new Candidate Trajectory')
+
+        # Get the current time
+        current_time = time.time() - self.start_time_
+        self.get_logger().info(f"Candidate trajectory callback triggered. Current time: {current_time:.2f} seconds")
 
         '''
         Forward integration of the trajectory
@@ -127,7 +138,9 @@ class Eware(Node):
         6. Publish the setpoint
         7. RK4 on the battery_dynamics to update self.curr_SoC_ // Make sure to match the frequency
         '''
-        self.get_logger().info('Publishing the new setpoint')
+        # self.get_logger().info('Publishing the new setpoint')
+        current_time = time.time() - self.start_time_
+        self.get_logger().info(f"Setpoint publisher callback triggered. Current time: {current_time:.2f} seconds")
 
 
 
