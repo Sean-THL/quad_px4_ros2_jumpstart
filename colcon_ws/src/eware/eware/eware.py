@@ -13,6 +13,10 @@ import builtin_interfaces.msg
 from visualization_msgs.msg import Marker
 
 
+## Julia call
+from juliacall import Main as jl
+
+
 '''
 Flight Preview Current Version (V1):
 - The flight preview button currently verifies the ros and px4 communication stack.

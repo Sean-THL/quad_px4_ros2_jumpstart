@@ -53,5 +53,20 @@ RUN apt install -y tmux iputils-ping
 WORKDIR /home/colcon_ws
 RUN echo "source /home/colcon_ws/install/setup.bash" >> ~/.bashrc
 
-RUN pip3 install empy==3.3.4
+RUN pip3 install empy==3.3.4 juliacall==0.9.23
 RUn echo 'alias px4="ros2 launch all_launch px4.launch.py"' >> ~/.bashrc
+
+
+# Install Julia
+WORKDIR /root/julia_install/
+COPY deps/install.jl .
+RUN wget https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-1.11.1-linux-x86_64.tar.gz && tar zxvf julia-1.11.1-linux-x86_64.tar.gz
+RUN echo PATH="\$PATH:/root/julia_install/julia-1.11.1/bin" >> ~/.bashrc
+RUN /root/julia_install/julia-1.11.1/bin/julia install.jl
+# Set environment variable for JuliaCall to offline mode
+ENV PYTHON_JULIAPKG_EXE=/root/julia_install/julia-1.11.1/bin/julia
+ENV PYTHON_JULIAPKG_OFFLINE=yes
+
+# Install python requirements
+# WORKDIR $OVERLAY_WS
+# RUN pip3 install -r py_requirements.txt
