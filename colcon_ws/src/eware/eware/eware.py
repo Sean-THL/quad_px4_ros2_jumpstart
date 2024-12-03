@@ -186,13 +186,28 @@ class EwareNode(Node):
         2. Convert that into quadrotor states for forward integration
         '''
         # Current time
-        t_k = time.time() - self.start_time_
+        
+        self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
         # self.get_logger().info(f"Candideate trajectory callback triggered. Current time: {t_k:.2f} seconds")
 
 
-        self.flat_states = jl.seval("flat_states = [state_; state_yaw]")
-        self.test_return = jl.seval("test_return = Eware.test_func(flat_states)")
-        self.get_logger().info(f"Test return: {self.test_return:.2f}")
+        # self.flat_states = jl.seval("flat_states = [state_; state_yaw]")
+        # self.test_return1, self.test_return2 = jl.seval("test_return, test_return2 = Eware.test_func(flat_states)")
+        # self.get_logger().info(f"Test return: {self.test_return1}")
+        # self.get_logger().info(f"Test return: {self.test_return2}")
+
+        self.flat_states_k = jl.seval("flat_states_k = [state_; state_yaw]")
+        self.battery_soc_k = self.jlstore("battery_soc_k", 60.0)
+        self.discharge_rate = self.jlstore("discharge_rate", 0.6677)
+        self.charge_pos = jl.seval("charge_pos = [0.; 0; 0]")
+        self.di_ts, self.di_xs, self.di_us, self.can_soc_end = jl.seval("di_ts, di_xs, di_us, can_soc_end = Eware.generate_candidate_traj(t_k, flat_states_k, battery_soc_k, discharge_rate, charge_pos)")
+        self.get_logger().info(f"di_xs: {self.di_xs[1]}")
+        self.get_logger().info(f"len_di_ts: {len(self.di_ts)}")
+        self.get_logger().info(f"len_di_xs: {len(self.di_xs)}")
+        self.get_logger().info(f"len_di_xs[1]: {len(self.di_xs[1])}")
+        self.get_logger().info(f"len_di_us: {len(self.di_us)}")
+        self.get_logger().info(f"len_di_us[1]: {len(self.di_us[1])}")
+        self.get_logger().info(f"can_soc_end: {self.can_soc_end}")
 
         ## TODO:
         # Send
