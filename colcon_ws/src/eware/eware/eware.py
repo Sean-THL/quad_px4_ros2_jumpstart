@@ -25,7 +25,8 @@ Flight Preview Current Version (V1):
 Things to test:
 - Mission turn on and off tested
 - Timers truned on and off tested
-- Timers testing 
+- Timers testing (ONG)
+- Julia code to generate the nominal trajectory
 '''
 
 class Eware(Node):
@@ -56,6 +57,14 @@ class Eware(Node):
             self.mission_status,
             10
         )
+
+        # julia imports and imports
+
+        # Julia varaible storage function
+        self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")
+
+        # Import julia functions (might not need it; remove)
+        # jl.seval("using LinearAlgebra, BlockDiagonals, ForwardDiff, ControlSystems, ComponentArrays, Interpolations, Parameters: @unpack, StaticArrays, Plots")    
 
     def mission_status(self, mission_status_msg):
         # self.get_logger().info("Checking msg")

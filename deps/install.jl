@@ -29,7 +29,8 @@ Pkg.add([
     "StaticArrays",
     "StatsBase",
     "Parameters",
-    "Plots"
+    "Plots",
+    "PythonCall"
 ])
 
 Pkg.precompile()
