@@ -6,7 +6,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.duration import Duration
 
 from geometry_msgs.msg import PoseStamped, Pose, Twist, Accel, PointStamped, PoseArray
-from dasc_msgs.msg import DITrajectory, EwareMissionStatus
+from dasc_msgs.msg import DIState, DIAcc, DITrajectorySimple, EwareMissionStatus
 from px4_msgs.msg import VehicleLocalPosition, TrajectorySetpoint
 from nav_msgs.msg import Path
 import builtin_interfaces.msg 
@@ -61,11 +61,19 @@ class EwareNode(Node):
         # self.dynamics = jl.include("src/julia_common_exp/julia_src/Eware.jl")
         
         # Pubs
-        self.pub_traj_ = self.create_publisher(DITrajectory, 'px4_100/committed_traj', 10)
+        self.pub_traj_ = self.create_publisher(DITrajectorySimple, "px4_100/DI_committed_traj", 10)
         self.pub_px4_ = self.create_publisher(TrajectorySetpoint, "/px4_100/fmu/in/trajectory_setpoint", 10)
 
 
         # Subs
+        
+        # Vehicle Position sub
+        self.sub_state_ = self.create_subscription( 
+                VehicleLocalPosition,
+                'px4_100/fmu/out/vehicle_local_position',
+                self.state_callback,
+                qos_profile_sensor_data)
+
         # Mission Status sub
         self.sub_mission_status_ = self.create_subscription(
             EwareMissionStatus,
@@ -73,13 +81,6 @@ class EwareNode(Node):
             self.mission_status_cb,
             10
         )
-
-        # Vehicle Position sub
-        self.sub_state_ = self.create_subscription( 
-                VehicleLocalPosition,
-                'px4_100/fmu/out/vehicle_local_position',
-                self.state_callback,
-                qos_profile_sensor_data)
 
         # julia imports and imports
 
@@ -201,7 +202,8 @@ class EwareNode(Node):
         self.discharge_rate = self.jlstore("discharge_rate", 0.6677)
         self.charge_pos = jl.seval("charge_pos = [0.; 0; 0]")
         self.di_ts, self.di_xs, self.di_us, self.can_soc_end = jl.seval("di_ts, di_xs, di_us, can_soc_end = Eware.generate_candidate_traj(t_k, flat_states_k, battery_soc_k, discharge_rate, charge_pos)")
-        self.get_logger().info(f"di_xs: {self.di_xs[1]}")
+        
+        # self.get_logger().info(f"di_xs: {self.di_xs[1]}")
         self.get_logger().info(f"len_di_ts: {len(self.di_ts)}")
         self.get_logger().info(f"len_di_xs: {len(self.di_xs)}")
         self.get_logger().info(f"len_di_xs[1]: {len(self.di_xs[1])}")
@@ -210,15 +212,32 @@ class EwareNode(Node):
         self.get_logger().info(f"can_soc_end: {self.can_soc_end}")
 
         ## TODO:
-        # Send
-        # 1. Current time since the timer CandTraj_Timer started
-        # 2. Current SoC
-        # 2. Current state of the quadrotor 
-        # 3. Discharge rate
-        # 4. 
-        # Receive
-        # 1. The Cand Trajectory
-        # 2. The SoC at the end of the candidate trajectory
+        # length_di_ts: 199
+        # length_di_xs: 199
+        # length_di_us: 198
+        # length_di_xs[1]: 6
+        # length_di_us[1]: 3
+
+        # For now validate the candidate trajectory right now
+        DITraj_msg = DITrajectorySimple()
+        # msg.header.stamp = rclpy.Time.now()
+        DITraj_msg.header.frame_id = "vicon/world"
+        DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
+
+        DITraj_msg.times = self.di_ts
+
+        for i in range(len(self.di_xs)):
+            di_state = DIState()
+            di_state.state = self.di_xs[i]
+            DITraj_msg.states.append(di_state)
+
+        for i in range(len(self.di_us)):
+            di_acc = DIAcc()
+            di_acc.acceleration = self.di_us[i]
+            DITraj_msg.accelerations.append(di_acc) 
+
+        self.pub_traj_.publish(DITraj_msg)
+        # Update the DI trajectory messe
 
         ## Validate the candidate trajectory
         # 1. Send the cand_SoC_end for validation at the nominal trajectory
