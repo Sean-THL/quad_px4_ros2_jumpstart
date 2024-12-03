@@ -12,6 +12,8 @@ from nav_msgs.msg import Path
 import builtin_interfaces.msg 
 from visualization_msgs.msg import Marker
 
+## python imports
+import numpy as np
 
 ## Julia call
 from juliacall import Main as jl
@@ -29,7 +31,7 @@ Things to test:
 - Julia code to generate the nominal trajectory
 '''
 
-class Eware(Node):
+class EwareNode(Node):
 
     def __init__(self):
         super().__init__("eware")
@@ -59,14 +61,25 @@ class Eware(Node):
         # self.dynamics = jl.include("src/julia_common_exp/julia_src/Eware.jl")
         
         # Pubs
+        self.pub_traj_ = self.create_publisher(DITrajectory, 'px4_100/committed_traj', 10)
+        self.pub_px4_ = self.create_publisher(TrajectorySetpoint, "/px4_100/fmu/in/trajectory_setpoint", 10)
+
 
         # Subs
+        # Mission Status sub
         self.sub_mission_status_ = self.create_subscription(
             EwareMissionStatus,
             'px4_100/gs/eware_mission_status', # Right now the name is fixed; TODO: Give as an arg
-            self.mission_status,
+            self.mission_status_cb,
             10
         )
+
+        # Vehicle Position sub
+        self.sub_state_ = self.create_subscription( 
+                VehicleLocalPosition,
+                'px4_100/fmu/out/vehicle_local_position',
+                self.state_callback,
+                qos_profile_sensor_data)
 
         # julia imports and imports
 
@@ -75,7 +88,7 @@ class Eware(Node):
 
         self.get_logger().info("Done initializing")   
 
-    def mission_status(self, mission_status_msg):
+    def mission_status_cb(self, mission_status_msg):
         # self.get_logger().info("Checking msg")
         if (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == False):
             # If the timers aren't already running, start them
@@ -89,12 +102,14 @@ class Eware(Node):
 
 
     def start_timers(self):
-
         # Record the start time
         self.start_time_ = time.time()
         self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
         self.SetpointPub_Timer_ = self.create_timer(1 / self.SetpointPub_update_rate, self.Setpoint_callback)
         self.get_logger().info('Timers Started')
+                # Immediately call the callbacks for time = 0
+        self.CandTraj_callback()
+        self.Setpoint_callback()
         self.get_logger().info("Starting Mission")
 
     def stop_timers(self):
@@ -105,18 +120,79 @@ class Eware(Node):
         self.get_logger().info('Timers stopped')
         self.get_logger().info("Mission Stopped; Landing")
 
+
+    def state_callback(self, state_msg):
+
+        if not (state_msg.xy_valid  and state_msg.z_valid  and state_msg.heading_good_for_control):
+            return
+        ## Vehicle local position provides 
+        # self.state = np.array([
+        #     state_msg.y,
+        #     state_msg.x,
+        #     -state_msg.z,
+        #     state_msg.vy,
+        #     state_msg.vx,
+        #     -state_msg.vz,
+        #     state_msg.ay,
+        #     state_msg.ax,
+        #     -state_msg.az])
+
+        # self.state_yaw = np.pi/2 - state_msg.heading # in ENU coords
+
+        self.state_ = self.jlstore("state_", [
+                                    state_msg.y, 
+                                    state_msg.x, 
+                                    -state_msg.z,
+                                    state_msg.vy,
+                                    state_msg.vx,
+                                    -state_msg.vz,
+                                    state_msg.ay,
+                                    state_msg.ax,
+                                    -state_msg.az])
+
+        self.state_yaw_ = self.jlstore("state_yaw", np.pi/2 - state_msg.heading)
+
+        # self.get_logger().info(f"Current elevation: {self.state[6]:.2f} m")
+
+        # self.state_initialized = True
+        
+        # if self.use_sim_time:
+        #     unix_time_ns = time.time_ns()
+        #     lag_ns = unix_time_ns - (state_msg.timestamp_sample * 1000)
+        # else:
+        #     time_ns = self.get_clock().now().nanoseconds # when using gazebo, the publish rate is attrocious
+        #     lag_ns = time_ns - (state_msg.timestamp_sample*1000)
+
+        # now_ns  = self.get_clock().now().nanoseconds
+
+        # extra_lag_ms = 0*1000.0/self.traj_rate_hz # i.e. a skip_idx = 1
+
+        # msg_ns = now_ns - lag_ns - extra_lag_ms * 10**6
+
+        # shifted_s = int(msg_ns // 10**9)
+        # shifted_ns = int(msg_ns % 10**9)
+
+        # self.state_stamp = builtin_interfaces.msg.Time(sec = shifted_s, nanosec=shifted_ns)
+
+
+
+
     def CandTraj_callback(self):
         # self.get_logger().info('Generating new Candidate Trajectory')
-
-        # Get the current time
-        current_time = time.time() - self.start_time_
-        self.get_logger().info(f"Candidate trajectory callback triggered. Current time: {current_time:.2f} seconds")
 
         '''
         Forward integration of the trajectory
         1. Get the quadrotor current state (p, v, a, yaw)
         2. Convert that into quadrotor states for forward integration
         '''
+        # Current time
+        t_k = time.time() - self.start_time_
+        # self.get_logger().info(f"Candideate trajectory callback triggered. Current time: {t_k:.2f} seconds")
+
+
+        self.flat_states = jl.seval("flat_states = [state_; state_yaw]")
+        self.test_return = jl.seval("test_return = Eware.test_func(flat_states)")
+        self.get_logger().info(f"Test return: {self.test_return:.2f}")
 
         ## TODO:
         # Send
@@ -157,14 +233,14 @@ class Eware(Node):
         7. RK4 on the battery_dynamics to update self.curr_SoC_ // Make sure to match the frequency
         '''
         # self.get_logger().info('Publishing the new setpoint')
-        current_time = time.time() - self.start_time_
-        self.get_logger().info(f"Setpoint publisher callback triggered. Current time: {current_time:.2f} seconds")
+        t_k = time.time() - self.start_time_
+        # self.get_logger().info(f"Setpoint publisher callback triggered. Current time: {t_k:.2f} seconds")
 
 
 
 def main(args = None):
     rclpy.init(args=args)
-    node = Eware()
+    node = EwareNode()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
