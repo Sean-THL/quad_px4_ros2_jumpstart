@@ -48,6 +48,16 @@ class Eware(Node):
         self.curr_SoC_ = self.curr_battery_SoC_
         self.start_time_ = None 
 
+        # Julia
+        # Creating variable storage function
+        self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")
+
+        jl.seval("using DifferentialEquations, LinearAlgebra, BlockDiagonals, ForwardDiff, ControlSystems, ComponentArrays, Parameters, StaticArrays, Convex, ECOS")
+
+        # Import modules
+        self.eware = jl.include("src/julia_common_exp/julia_src/Eware.jl")
+        # self.dynamics = jl.include("src/julia_common_exp/julia_src/Eware.jl")
+        
         # Pubs
 
         # Subs
@@ -63,8 +73,7 @@ class Eware(Node):
         # Julia varaible storage function
         self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")
 
-        # Import julia functions (might not need it; remove)
-        # jl.seval("using LinearAlgebra, BlockDiagonals, ForwardDiff, ControlSystems, ComponentArrays, Interpolations, Parameters: @unpack, StaticArrays, Plots")    
+        self.get_logger().info("Done initializing")   
 
     def mission_status(self, mission_status_msg):
         # self.get_logger().info("Checking msg")
