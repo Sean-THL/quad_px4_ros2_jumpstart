@@ -49,6 +49,14 @@ class EwareNode(Node):
         self.curr_battery_SoC_ = 60.0
         self.curr_SoC_ = self.curr_battery_SoC_
         self.start_time_ = None 
+        self.goal_yaw = 0.0 # in the ENU frame
+
+
+
+        # Committed trajectory init
+        # self.committed_tks = None
+        # self.committed_xks = None
+        # self.committed_uks = None
 
         # Julia
         # Creating variable storage function
@@ -82,6 +90,8 @@ class EwareNode(Node):
             10
         )
 
+        # self
+
         # julia imports and imports
 
         # Julia varaible storage function
@@ -103,7 +113,13 @@ class EwareNode(Node):
 
 
     def start_timers(self):
-        # Record the start time
+       
+        # First precompile the julia
+        self.get_logger().info("Starting Precompiling")
+        self.CandTraj_callback("Precompile")
+        self.get_logger().info("Finished Precompiling")
+        
+        # Start mission and record start time
         self.start_time_ = time.time()
         self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
         self.SetpointPub_Timer_ = self.create_timer(1 / self.SetpointPub_update_rate, self.Setpoint_callback)
@@ -178,7 +194,7 @@ class EwareNode(Node):
 
 
 
-    def CandTraj_callback(self):
+    def CandTraj_callback(self, mode = "Mission"):
         # self.get_logger().info('Generating new Candidate Trajectory')
 
         '''
@@ -186,68 +202,76 @@ class EwareNode(Node):
         1. Get the quadrotor current state (p, v, a, yaw)
         2. Convert that into quadrotor states for forward integration
         '''
-        # Current time
         
-        self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
-        # self.get_logger().info(f"Candideate trajectory callback triggered. Current time: {t_k:.2f} seconds")
+        if mode == "Precompile":
+            pre_t_k = self.jlstore("pre_t_k", 0.0)
+            pre_flat_states_k = jl.seval("pre_flat_states_k = [state_; state_yaw]")
+            pre_battery_soc_k = self.jlstore("pre_battery_soc_k", 60.0)
+            pre_discharge_rate = self.jlstore("pre_discharge_rate", 0.6677)
+            pre_charge_pos = jl.seval("pre_charge_pos = [0.; 0; 0]")
+            pre_di_ts, pre_di_xs, pre_di_us, pre_can_soc_end = jl.seval("pre_di_ts, pre_di_xs, pre_di_us, pre_can_soc_end = Eware.generate_candidate_traj(pre_t_k, pre_flat_states_k, pre_battery_soc_k, pre_discharge_rate, pre_charge_pos)")
+        else:
+            # Current time
+            self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
+            self.flat_states_k = jl.seval("flat_states_k = [state_; state_yaw]")
+            self.battery_soc_k = self.jlstore("battery_soc_k", 60.0)
+            self.discharge_rate = self.jlstore("discharge_rate", 0.6677)
+            self.charge_pos = jl.seval("charge_pos = [0.; 0; 0]")
+            self.di_ts, self.di_xs, self.di_us, self.can_soc_end = jl.seval("di_ts, di_xs, di_us, can_soc_end = Eware.generate_candidate_traj(t_k, flat_states_k, battery_soc_k, discharge_rate, charge_pos)")
+            
+            # self.get_logger().info(f"self.di_xs: {self.di_xs}")
+            # # self.get_logger().info(f"di_xs: {self.di_xs[1]}")
+            # self.get_logger().info(f"len_di_ts: {len(self.di_ts)}")
+            # self.get_logger().info(f"len_di_xs: {len(self.di_xs)}")
+            # self.get_logger().info(f"len_di_xs[1]: {len(self.di_xs[1])}")
+            # self.get_logger().info(f"len_di_us: {len(self.di_us)}")
+            # self.get_logger().info(f"len_di_us[1]: {len(self.di_us[1])}")
+            # self.get_logger().info(f"can_soc_end: {self.can_soc_end}")
+
+            # length_di_ts: 199
+            # length_di_xs: 199
+            # length_di_us: 198
+            # length_di_xs[1]: 6
+            # length_di_us[1]: 3
 
 
-        # self.flat_states = jl.seval("flat_states = [state_; state_yaw]")
-        # self.test_return1, self.test_return2 = jl.seval("test_return, test_return2 = Eware.test_func(flat_states)")
-        # self.get_logger().info(f"Test return: {self.test_return1}")
-        # self.get_logger().info(f"Test return: {self.test_return2}")
+            ## Keep the copy of the committed trajectory internally and also publish it for possible plotting
+            if self.can_soc_end > 0.0:
+                
 
-        self.flat_states_k = jl.seval("flat_states_k = [state_; state_yaw]")
-        self.battery_soc_k = self.jlstore("battery_soc_k", 60.0)
-        self.discharge_rate = self.jlstore("discharge_rate", 0.6677)
-        self.charge_pos = jl.seval("charge_pos = [0.; 0; 0]")
-        self.di_ts, self.di_xs, self.di_us, self.can_soc_end = jl.seval("di_ts, di_xs, di_us, can_soc_end = Eware.generate_candidate_traj(t_k, flat_states_k, battery_soc_k, discharge_rate, charge_pos)")
+                # # Store the trajectory internally
+                # self.committed_tks = self.di_ts
+                # self.committed_xks = self.di_xs
+                # self.committed_uks = self.di_us
+                self.committed_tks_ = self.jlstore("committed_tks_", self.di_ts)
+                self.committed_xks_ = self.jlstore("committed_xks_", self.di_xs)
+                self.committed_uks_ = self.jlstore("committed_uks_", self.di_us)
+
+                # self.get_logger().info(f"committed_xks_cand: {self.committed_xks_}")
+
+                # For now validate the candidate trajectory right now
+                DITraj_msg = DITrajectorySimple()
+                # msg.header.stamp = rclpy.Time.now()
+                DITraj_msg.header.frame_id = "vicon/world"
+                DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
+
+                DITraj_msg.times = self.di_ts
+
+                for i in range(len(self.di_xs)):
+                    di_state = DIState()
+                    di_state.state = self.di_xs[i]
+                    DITraj_msg.states.append(di_state)
+
+                for i in range(len(self.di_us)):
+                    di_acc = DIAcc()
+                    di_acc.acceleration = self.di_us[i]
+                    DITraj_msg.accelerations.append(di_acc) 
+
+                self.pub_traj_.publish(DITraj_msg)
+                self.get_logger().info('Trajectory Committed')
+            else:
+                self.get_logger().info('Not committed; Quad returning')
         
-        # self.get_logger().info(f"di_xs: {self.di_xs[1]}")
-        self.get_logger().info(f"len_di_ts: {len(self.di_ts)}")
-        self.get_logger().info(f"len_di_xs: {len(self.di_xs)}")
-        self.get_logger().info(f"len_di_xs[1]: {len(self.di_xs[1])}")
-        self.get_logger().info(f"len_di_us: {len(self.di_us)}")
-        self.get_logger().info(f"len_di_us[1]: {len(self.di_us[1])}")
-        self.get_logger().info(f"can_soc_end: {self.can_soc_end}")
-
-        ## TODO:
-        # length_di_ts: 199
-        # length_di_xs: 199
-        # length_di_us: 198
-        # length_di_xs[1]: 6
-        # length_di_us[1]: 3
-
-        # For now validate the candidate trajectory right now
-        DITraj_msg = DITrajectorySimple()
-        # msg.header.stamp = rclpy.Time.now()
-        DITraj_msg.header.frame_id = "vicon/world"
-        DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
-
-        DITraj_msg.times = self.di_ts
-
-        for i in range(len(self.di_xs)):
-            di_state = DIState()
-            di_state.state = self.di_xs[i]
-            DITraj_msg.states.append(di_state)
-
-        for i in range(len(self.di_us)):
-            di_acc = DIAcc()
-            di_acc.acceleration = self.di_us[i]
-            DITraj_msg.accelerations.append(di_acc) 
-
-        self.pub_traj_.publish(DITraj_msg)
-        # Update the DI trajectory messe
-
-        ## Validate the candidate trajectory
-        # 1. Send the cand_SoC_end for validation at the nominal trajectory
-        # 2. If the service returns true -> commit the trajectory
-        # 
-        # valid = False
-        # if (valid == True):
-        #     self.get_logger().info('New Candidate Trajectory Committed')
-        # else:
-        #     self.get_logger().info('NOT COMMITTED! QUAD RETURNING FOR CHARGING')
 
 
     def Setpoint_callback(self):
@@ -267,7 +291,48 @@ class EwareNode(Node):
         7. RK4 on the battery_dynamics to update self.curr_SoC_ // Make sure to match the frequency
         '''
         # self.get_logger().info('Publishing the new setpoint')
-        t_k = time.time() - self.start_time_
+        self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
+
+        # Get the new setpoint
+        # Store the trajectory internally
+        # self.committed_tks = self.jlstore("committed_tks", self.committed_tks)
+        # self.committed_xks = self.jlstore("committed_xks", self.committed_xks)
+        # self.committed_uks = self.jlstore("committed_uks", self.committed_uks)
+        
+        # self.get_logger().info(f"committed_xks: {committed_xks_[1]}")
+
+        # Interpolate to get the setpoint
+        di_state_sp_k, di_acc_sp_k = jl.seval("di_state_sp_k, di_acc_sp_k = Eware.DI_interpolate_traj(t_k, committed_tks_, committed_xks_, committed_uks_)")
+
+
+        # Publish the setpoint]
+        px4_msg = TrajectorySetpoint()
+        px4_msg.raw_mode = False;
+
+        # Tajectorty Setpoint in in NED frame
+        # Set pos
+        px4_msg.position[0] = di_state_sp_k[1]
+        px4_msg.position[1] = di_state_sp_k[0]
+        px4_msg.position[2] = - di_state_sp_k[2]
+
+        # set vel
+        px4_msg.velocity[0] = di_state_sp_k[4]
+        px4_msg.velocity[1] = di_state_sp_k[3]
+        px4_msg.velocity[2] = - di_state_sp_k[5]
+
+        # set acc
+        px4_msg.acceleration[1] = di_acc_sp_k[0]
+        px4_msg.acceleration[0] = di_acc_sp_k[1]
+        px4_msg.acceleration[2] = -di_acc_sp_k[2]
+        px4_msg.jerk[0] = 0
+        px4_msg.jerk[1] = 0
+        px4_msg.jerk[2] = 0
+
+        px4_msg.yaw = np.pi/2 - self.goal_yaw
+        px4_msg.yawspeed = 0.0
+
+        self.pub_px4_.publish(px4_msg)
+
         # self.get_logger().info(f"Setpoint publisher callback triggered. Current time: {t_k:.2f} seconds")
 
 
