@@ -66,8 +66,17 @@ RUN /root/julia_install/julia-1.11.1/bin/julia install.jl
 # COPY deps/install2.jl .
 # RUN /root/julia_install/julia-1.11.1/bin/julia install2.jl
 # Set environment variable for JuliaCall to offline mode
+# create the sysimage with DiffEq installed
+# RUN julia -e 'using Pkg; Pkg.add("DifferentialEquations")'
+COPY scripts/create_julia_sysimage.jl /root/julia_install/create_julia_sysimage.jl
+RUN /root/julia_install/julia-1.11.1/bin/julia create_julia_sysimage.jl
+COPY scripts/precompile_julia.jl /root/julia_install/precompile_julia.jl
+RUN /root/julia_install/julia-1.11.1/bin/julia --sysimage=/root/julia_install/JuliaSysImage.so precompile_julia.jl
+
 ENV PYTHON_JULIAPKG_EXE=/root/julia_install/julia-1.11.1/bin/julia
 ENV PYTHON_JULIAPKG_OFFLINE=yes
+ENV PYTHON_JULIACALL_SYSIMAGE=/root/julia_install/JuliaSysImage.so
+
 WORKDIR /home/colcon_ws
 # Install python requirements
 # WORKDIR $OVERLAY_WS

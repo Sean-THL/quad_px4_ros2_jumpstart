@@ -41,7 +41,7 @@ class EwareNode(Node):
         self.mode = "Stopped"
         self.get_logger().info(self.mode)
         self.CandTraj_update_rate = 1.0 # Hz
-        self.SetpointPub_update_rate = 100.0 # Hz
+        self.SetpointPub_update_rate = 50.0 # Hz
         self.discharge_rate = 0.677
         self.charge_duration = 5.0 # seconds
         
@@ -49,7 +49,7 @@ class EwareNode(Node):
         # Declare all variables
         self.CandTraj_Timer_ = None
         self.SetpointPub_Timer_ = None
-        self.battery_SoC_cap_ = 60.0
+        self.battery_SoC_cap_ = 12.0
         self.curr_SoC_ = self.battery_SoC_cap_
         self.start_time_ = None 
         self.goal_yaw = 0.0 # in the ENU frame
@@ -94,7 +94,7 @@ class EwareNode(Node):
         # self
 
         # julia params
-        self.charge_pos = jl.seval("charge_pos = [0.; 0; 0.2]")
+        self.charge_pos = jl.seval("charge_pos = [0.0; 0.0; 0.3]")
 
         # Julia varaible storage function
         self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")
@@ -103,12 +103,17 @@ class EwareNode(Node):
 
     def mission_status_cb(self, mission_status_msg):
         # self.get_logger().info("Checking msg")
-        if (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == False):
+        if (mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == False):
+            # First precompile the julia
+            self.get_logger().info("Starting Precompiling")
+            self.CandTraj_callback("Precompile")
+            self.get_logger().info("Finished Precompiling")           
+        elif (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == False) and (self.visits < 2):
             # If the timers aren't already running, start them
             if self.CandTraj_Timer_ is None and self.SetpointPub_Timer_ is None:
                 self.mode = "Mission"
                 self.start_timers()
-        elif (mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True):
+        elif ((mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True)) or (self.visits == 2) :
             if self.CandTraj_Timer_ is not None and self.SetpointPub_Timer_ is not None:
                 self.mode = "Stopped"
                 self.stop_timers()
@@ -117,6 +122,7 @@ class EwareNode(Node):
     def start_timers(self):
        
         # First precompile the julia
+        # Incase preompiling missed
         self.get_logger().info("Starting Precompiling")
         self.CandTraj_callback("Precompile")
         self.get_logger().info("Finished Precompiling")
@@ -157,7 +163,7 @@ class EwareNode(Node):
         #     -state_msg.az])
 
         # self.state_yaw = np.pi/2 - state_msg.heading # in ENU coords
-
+        self.get_logger().info("Getting new state")
         self.state_ = self.jlstore("state_", [
                                     state_msg.y, 
                                     state_msg.x, 
@@ -287,7 +293,7 @@ class EwareNode(Node):
             self.get_logger().info('Not committed; Quad returning')
             self.mode = "Landing"
         
-
+        # self.get_logger().info('Out Generating new Candidate Trajectory')
 
     def Setpoint_callback(self):
         '''
@@ -306,11 +312,18 @@ class EwareNode(Node):
         7. RK4 on the battery_dynamics to update self.curr_SoC_ // Make sure to match the frequency
         '''
         # self.get_logger().info('Publishing the new setpoint')
+        if (self.visits == 2):
+            self.mode = "Stopped"
+            self.stop_timers()
+            return
+
         self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
 
         ## Update the soc
         if self.mode != "Charging":
             self.update_battery_soc()
+
+        
         
         self.get_logger().info(f"self.curr_SoC_: {self.curr_SoC_}")
         # Get the new setpoint
@@ -322,16 +335,23 @@ class EwareNode(Node):
         # self.get_logger().info(f"committed_xks: {committed_xks_[1]}")
 
         # Interpolate to get the setpoint
+        # Print the end time of the candidate trajectory (being printing in Julia)
+        self.get_logger().info(f"Current_time: {time.time() - self.start_time_}")
+        # self.get_logger().info("Going to interpolate")
         di_state_sp_k, di_acc_sp_k = jl.seval("di_state_sp_k, di_acc_sp_k = Eware.DI_interpolate_traj(t_k, committed_tks_, committed_xks_, committed_uks_)")
-
+        # self.get_logger().info("Back from interpolate")
 
         # Check if the quadrotor is landing
         if self.mode == "Landing":
             ## check distance to charge_pos
+            # self.get_logger().info("Going at_charging")
             at_charging = jl.seval("at_charging = Eware.reached_charging_station(state_, charge_pos)")
-            if at_charging:
-                self.mode == "Charging"
+            # self.get_logger().info("Back at_charging")
+            if (at_charging == 1):
+                self.mode = "Charging"
+                self.get_logger().info("Mission Stopped; Landing")
                 self.charge_start_time = time.time()
+                self.get_logger().info(f"Charge_start_time: {self.charge_start_time}")
                 self.curr_SoC_ = self.battery_SoC_cap_ # Restore battery level          
 
         # Publish the setpoint]
@@ -350,11 +370,14 @@ class EwareNode(Node):
         px4_msg.velocity[2] = - di_state_sp_k[5]
 
         # set acc
+        self.get_logger().info(self.mode)
         if self.mode == "Charging":
+            self.get_logger().info('New acc == 0')
             px4_msg.acceleration[1] = 0.0
             px4_msg.acceleration[0] = 0.0
             px4_msg.acceleration[2] = 0.0
         else:
+            self.get_logger().info('New acc == from cand')
             px4_msg.acceleration[1] = di_acc_sp_k[0]
             px4_msg.acceleration[0] = di_acc_sp_k[1]
             px4_msg.acceleration[2] = -di_acc_sp_k[2]
@@ -367,6 +390,7 @@ class EwareNode(Node):
 
         self.pub_px4_.publish(px4_msg)
 
+        # self.get_logger().info('Out Publishing the new setpoint')
         # self.get_logger().info(f"Setpoint publisher callback triggered. Current time: {t_k:.2f} seconds")
 
     def update_battery_soc(self):
