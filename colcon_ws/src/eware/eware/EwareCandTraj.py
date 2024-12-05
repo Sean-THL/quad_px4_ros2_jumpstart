@@ -1,0 +1,262 @@
+import time 
+
+import rclpy 
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.duration import Duration
+
+from geometry_msgs.msg import PoseStamped, Pose, Twist, Accel, PointStamped, PoseArray
+from dasc_msgs.msg import DIState, DIAcc, DITrajectorySimple, EwareMissionStatus
+from px4_msgs.msg import VehicleLocalPosition, TrajectorySetpoint
+from nav_msgs.msg import Path
+import builtin_interfaces.msg 
+from visualization_msgs.msg import Marker
+
+## python imports
+import numpy as np
+
+## Julia call
+from juliacall import Main as jl
+
+'''
+Flight Preview Current Version (V1):
+- The flight preview button currently verifies the ros and px4 communication stack.
+- Ensures that ros communication works fine
+- Expected behaviour: The quadrotor will keep on starting candidate trajectory from the same initial state
+
+Things to test:
+- Mission turn on and off tested
+- Timers truned on and off tested
+- Timers testing (ONG)
+- Julia code to generate the nominal trajectory
+'''
+
+class EwareNode(Node):
+
+    def __init__(self):
+        super().__init__("eware")
+
+        # Declare all parameters
+        self.get_logger().info("Initializing params")
+        self.mode = "Stopped"
+        self.get_logger().info(self.mode)
+        self.CandTraj_update_rate = 1.0 # Hz
+        self.SetpointPub_update_rate = 50.0 # Hz
+        self.discharge_rate = 0.677
+        self.charge_duration = 5.0 # seconds
+        
+
+        # Declare all variables
+        self.CandTraj_Timer_ = None
+        self.SetpointPub_Timer_ = None
+        self.battery_SoC_cap_ = 12.0
+        self.curr_SoC_ = self.battery_SoC_cap_
+        self.start_time_ = None 
+        self.goal_yaw = 0.0 # in the ENU frame
+        self.visits = 0
+        self.charge_start_time = 0.0
+        # Committed trajectory init
+        # self.committed_tks = None
+        # self.committed_xks = None
+        # self.committed_uks = None
+
+        # Julia
+        # Creating variable storage function
+        self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")
+
+        jl.seval("using DifferentialEquations, LinearAlgebra, BlockDiagonals, ForwardDiff, ControlSystems, ComponentArrays, Parameters, StaticArrays, Convex, ECOS")
+
+        # Import modules
+        self.eware = jl.include("src/julia_common_exp/julia_src/Eware.jl")
+        # self.dynamics = jl.include("src/julia_common_exp/julia_src/Eware.jl")
+        
+        # Pubs
+        self.pub_traj_ = self.create_publisher(DITrajectorySimple, "/px4_100/DI_committed_traj", 10)
+
+        # Subs
+        
+        # Vehicle Position sub
+        self.sub_state_ = self.create_subscription( 
+                VehicleLocalPosition,
+                'px4_100/fmu/out/vehicle_local_position',
+                self.state_callback,
+                qos_profile_sensor_data)
+
+        # Mission Status sub
+        self.sub_mission_status_ = self.create_subscription(
+            EwareMissionStatus,
+            'px4_100/gs/eware_mission_status', # Right now the name is fixed; TODO: Give as an arg
+            self.mission_status_cb,
+            10
+        )
+
+        # self
+
+        # julia params
+        self.charge_pos = jl.seval("charge_pos = [0.0; 0.0; 0.3]")
+
+        # Julia varaible storage function
+        self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")
+
+        self.get_logger().info("Done initializing")   
+
+    def mission_status_cb(self, mission_status_msg):
+        # self.get_logger().info("Checking msg")
+        if (mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == False):
+            # First precompile the julia
+            self.get_logger().info("Starting Precompiling")
+            self.CandTraj_callback("Precompile")
+            self.get_logger().info("Finished Precompiling")           
+        elif (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == False) and (self.visits < 2):
+            # If the timers aren't already running, start them
+            if self.CandTraj_Timer_ is None and self.SetpointPub_Timer_ is None:
+                self.mode = "Mission"
+                self.start_timers()
+        elif ((mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True)) or (self.visits == 2) :
+            if self.CandTraj_Timer_ is not None and self.SetpointPub_Timer_ is not None:
+                self.mode = "Stopped"
+                self.stop_timers()
+
+
+    def start_timers(self):
+       
+        # First precompile the julia
+        # Incase preompiling missed
+        self.get_logger().info("Starting Precompiling")
+        self.CandTraj_callback("Precompile")
+        self.get_logger().info("Finished Precompiling")
+        
+        # Start mission and record start time
+        self.start_time_ = time.time()
+        self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
+        self.get_logger().info('Timers Started')
+                # Immediately call the callbacks for time = 0
+        self.CandTraj_callback()
+        self.get_logger().info("Starting Candidate Trajetory Generation")
+
+    def stop_timers(self):
+        self.CandTraj_Timer_.destroy()
+        self.CandTraj_Timer_ = None
+
+        self.get_logger().info('CandGen Timer stopped')
+
+
+    def state_callback(self, state_msg):
+
+        if not (state_msg.xy_valid  and state_msg.z_valid  and state_msg.heading_good_for_control):
+            return
+        ## Vehicle local position provides 
+        # self.state = np.array([
+        #     state_msg.y,
+        #     state_msg.x,
+        #     -state_msg.z,
+        #     state_msg.vy,
+        #     state_msg.vx,
+        #     -state_msg.vz,
+        #     state_msg.ay,
+        #     state_msg.ax,
+        #     -state_msg.az])
+
+        # self.state_yaw = np.pi/2 - state_msg.heading # in ENU coords
+        self.get_logger().info("Getting new state")
+        self.state_ = self.jlstore("state_", [
+                                    state_msg.y, 
+                                    state_msg.x, 
+                                    -state_msg.z,
+                                    state_msg.vy,
+                                    state_msg.vx,
+                                    -state_msg.vz,
+                                    state_msg.ay,
+                                    state_msg.ax,
+                                    -state_msg.az])
+
+        self.state_yaw_ = self.jlstore("state_yaw", np.pi/2 - state_msg.heading)
+
+
+
+    def CandTraj_callback(self, stage = "Mission"):
+        # self.get_logger().info('Generating new Candidate Trajectory')
+        # self.get_logger().info(f"self.di_xs: {self.di_xs}")
+        '''
+        Forward integration of the trajectory
+        1. Get the quadrotor current state (p, v, a, yaw)
+        2. Convert that into quadrotor states for forward integration
+        '''
+        
+        if stage == "Precompile":
+            pre_t_k = self.jlstore("pre_t_k", 0.0)
+            pre_flat_states_k = jl.seval("pre_flat_states_k = [state_; state_yaw]")
+            pre_battery_soc_k = self.jlstore("pre_battery_soc_k", 60.0)
+            pre_discharge_rate = self.jlstore("pre_discharge_rate", 0.6677)
+            pre_charge_pos = jl.seval("pre_charge_pos = [0.; 0; 0]")
+            pre_di_ts, pre_di_xs, pre_di_us, pre_can_soc_end = jl.seval("pre_di_ts, pre_di_xs, pre_di_us, pre_can_soc_end = Eware.generate_candidate_traj(pre_t_k, pre_flat_states_k, pre_battery_soc_k, pre_discharge_rate, pre_charge_pos)")
+            return 
+
+        # Check if quad has charged
+        if (time.time() >= (self.charge_start_time + self.charge_duration)) and (self.mode == "Charging"):
+            self.mode = "Mission"
+            self.visits += 1
+
+        self.get_logger().info(self.mode)
+
+        if self.mode != "Mission":
+            return
+
+        # Candidate Trajectory Replanning
+
+        # Current time
+        self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
+        self.flat_states_k = jl.seval("flat_states_k = [state_; state_yaw]")
+        self.battery_soc_k = self.jlstore("battery_soc_k", self.curr_SoC_)
+        self.discharge_rate_jl = self.jlstore("discharge_rate_jl", self.discharge_rate)
+        self.di_ts, self.di_xs, self.di_us, self.can_soc_end = jl.seval("di_ts, di_xs, di_us, can_soc_end = Eware.generate_candidate_traj(t_k, flat_states_k, battery_soc_k, discharge_rate_jl, charge_pos)")
+        
+
+
+
+        ## Keep the copy of the committed trajectory internally and also publish it for possible plotting
+        if self.can_soc_end > 0.0:
+            
+            self.committed_tks_ = self.jlstore("committed_tks_", self.di_ts)
+            self.committed_xks_ = self.jlstore("committed_xks_", self.di_xs)
+            self.committed_uks_ = self.jlstore("committed_uks_", self.di_us)
+
+
+            # For now validate the candidate trajectory right now
+            DITraj_msg = DITrajectorySimple()
+            # msg.header.stamp = rclpy.Time.now()
+            DITraj_msg.header.frame_id = "vicon/world"
+            DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
+
+            DITraj_msg.times = self.di_ts
+
+            for i in range(len(self.di_xs)):
+                di_state = DIState()
+                di_state.state = self.di_xs[i]
+                DITraj_msg.states.append(di_state)
+
+            for i in range(len(self.di_us)):
+                di_acc = DIAcc()
+                di_acc.acceleration = self.di_us[i]
+                DITraj_msg.accelerations.append(di_acc) 
+
+            self.pub_traj_.publish(DITraj_msg)
+            self.get_logger().info('Trajectory Committed')
+        else:
+            self.get_logger().info('Not committed; Quad returning')
+            self.mode = "Landing"
+        
+        # self.get_logger().info('Out Generating new Candidate Trajectory')
+
+
+
+def main(args = None):
+    rclpy.init(args=args)
+    node = EwareNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
