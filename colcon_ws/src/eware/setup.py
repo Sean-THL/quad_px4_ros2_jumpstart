@@ -20,7 +20,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'eware_node = eware.eware:main',
+            'eware_node = eware.eware:main'
+            'EwareCandTraj = eware.EwareCandTraj:main',
+            'EwareSpPub = eware.EwareSpPub:main',
         ],
     },
 )
