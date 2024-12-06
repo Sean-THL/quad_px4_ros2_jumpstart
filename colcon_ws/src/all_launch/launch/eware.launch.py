@@ -15,14 +15,14 @@ def generate_launch_description():
     # launch the candidate trajectory node 
     cand_traj_node = Node(
         name="candidate_trajectory",
-        executable="EwareCandTraj",
+        executable="eware_CandTraj_node",
         package="eware"
         )
 
     # launch the setpoint publisher 
     setpoint_pub_node = Node(
         name="setpoint_pub_node",
-        executable="EwareSpPub",
+        executable="eware_SpPub_node",
         package="eware"
         )
 

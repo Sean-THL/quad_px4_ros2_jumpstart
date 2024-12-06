@@ -6,7 +6,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.duration import Duration
 
 from geometry_msgs.msg import PoseStamped, Pose, Twist, Accel, PointStamped, PoseArray
-from dasc_msgs.msg import DIState, DIAcc, DITrajectorySimple, EwareMissionStatus
+from dasc_msgs.msg import DIState, DIAcc, DITrajectorySimple, EwareMissionStatus, CandSetpointStatus
 from px4_msgs.msg import VehicleLocalPosition, TrajectorySetpoint
 from nav_msgs.msg import Path
 import builtin_interfaces.msg 
@@ -34,18 +34,18 @@ Things to test:
 class EwareCandTrajNode(Node):
 
     def __init__(self):
-        super().__init__("eware")
+        super().__init__("eware_cand_node")
 
         # Declare all parameters
-        self.get_logger().info("Initializing params")
-        self.get_logger().info(self.mode)
+        self.get_logger().info("Initializing Candidate Trajectory Node")
         self.CandTraj_update_rate = 1.0 # Hz
         self.SetpointPub_update_rate = 50.0 # Hz
         self.discharge_rate = 0.677
         self.charge_duration = 5.0 # seconds
-        self.cand_timer_state = False
-        
 
+        self.first_cand_pub = False
+        self.cand_timer_state = False        
+        self.cand_precomp_done = False
         # Declare all variables
         self.CandTraj_Timer_ = None
         self.SetpointPub_Timer_ = None
@@ -82,7 +82,7 @@ class EwareCandTrajNode(Node):
         # Mission Status sub
         self.sub_mission_status_ = self.create_subscription(
             EwareMissionStatus,
-            'px4_100/gs/eware_mission_status', # Right now the name is fixed; TODO: Give as an arg
+            '/px4_100/gs/eware_mission_status', # Right now the name is fixed; TODO: Give as an arg
             self.mission_status_cb,
             10
         )
@@ -91,7 +91,7 @@ class EwareCandTrajNode(Node):
         # Mission Status sub
         self.sub_cand_setpoint_status_ = self.create_subscription(
             CandSetpointStatus,
-            'px4_100/cand_setpoint_status', # Right now the name is fixed; TODO: Give as an arg
+            '/px4_100/cand_setpoint_status', # Right now the name is fixed; TODO: Give as an arg
             self.cand_setpoint_cb,
             10
         )
@@ -121,7 +121,7 @@ class EwareCandTrajNode(Node):
         #     -state_msg.az])
 
         # self.state_yaw = np.pi/2 - state_msg.heading # in ENU coords
-        self.get_logger().info("Getting new state")
+        # self.get_logger().info("Getting new state")
         self.state_ = self.jlstore("state_", [
                                     state_msg.y, 
                                     state_msg.x, 
@@ -138,15 +138,17 @@ class EwareCandTrajNode(Node):
 
     def mission_status_cb(self, mission_status_msg):
         # self.get_logger().info("Checking msg")
-        if (mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == False):
+        if (self.cand_precomp_done == False):
             # First precompile the julia
-            self.get_logger().info("[CandNode:] Starting Precompiling")
+            self.get_logger().info("Starting Precompiling")
             self.CandTraj_callback("Precompile")
-            self.get_logger().info("[CandNode:] Finished Precompiling")
+            self.get_logger().info("Finished Precompiling")
+            self.cand_precomp_done = True
 
             # Signal tp EwareSpPub Node for finishing precompilation
+            
             cand_sp_msg = CandSetpointStatus()
-            cand_sp_msg.CandPrecompDone = True
+            cand_sp_msg.cand_precomp_done = self.cand_precomp_done
             self.cand_sp_.publish(cand_sp_msg)
 
         # If the precompilation is done and signal is received from the setpoint node to start the timer, start it
@@ -175,7 +177,7 @@ class EwareCandTrajNode(Node):
     def stop_timers(self):
         self.CandTraj_Timer_.destroy()
         self.CandTraj_Timer_ = None
-        self.get_logger().info('[CandNode:] CandGen Timer stopped')
+        self.get_logger().info('CandGen Timer stopped')
 
 
     def CandTraj_callback(self, stage = "Mission"):
@@ -207,44 +209,48 @@ class EwareCandTrajNode(Node):
         # if self.mode != "Mission":
         #     return
 
-        # # Candidate Trajectory Replanning
+        # Candidate Trajectory Replanning
 
-        # # Current time
-        # self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
-        # self.flat_states_k = jl.seval("flat_states_k = [state_; state_yaw]")
-        # self.battery_soc_k = self.jlstore("battery_soc_k", self.curr_SoC_)
-        # self.discharge_rate_jl = self.jlstore("discharge_rate_jl", self.discharge_rate)
-        # self.di_ts, self.di_xs, self.di_us, self.can_soc_end = jl.seval("di_ts, di_xs, di_us, can_soc_end = Eware.generate_candidate_traj(t_k, flat_states_k, battery_soc_k, discharge_rate_jl, charge_pos)")
+        # Current time
+        self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
+        self.flat_states_k = jl.seval("flat_states_k = [state_; state_yaw]")
+        self.battery_soc_k = self.jlstore("battery_soc_k", self.curr_SoC_)
+        self.discharge_rate_jl = self.jlstore("discharge_rate_jl", self.discharge_rate)
+        self.di_ts, self.di_xs, self.di_us, self.can_soc_end = jl.seval("di_ts, di_xs, di_us, can_soc_end = Eware.generate_candidate_traj(t_k, flat_states_k, battery_soc_k, discharge_rate_jl, charge_pos)")
         
 
-        # ## Keep the copy of the committed trajectory internally and also publish it for possible plotting
+        ## Keep the copy of the committed trajectory internally and also publish it for possible plotting
         # if self.can_soc_end > 0.0:
             
-        #     self.committed_tks_ = self.jlstore("committed_tks_", self.di_ts)
-        #     self.committed_xks_ = self.jlstore("committed_xks_", self.di_xs)
-        #     self.committed_uks_ = self.jlstore("committed_uks_", self.di_us)
+            # self.committed_tks_ = self.jlstore("committed_tks_", self.di_ts)
+            # self.committed_xks_ = self.jlstore("committed_xks_", self.di_xs)
+            # self.committed_uks_ = self.jlstore("committed_uks_", self.di_us)
 
+        # For now validate the candidate trajectory right now
+        DITraj_msg = DITrajectorySimple()
+        # msg.header.stamp = rclpy.Time.now()
+        DITraj_msg.header.frame_id = "vicon/world"
+        DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
 
-        #     # For now validate the candidate trajectory right now
-        #     DITraj_msg = DITrajectorySimple()
-        #     # msg.header.stamp = rclpy.Time.now()
-        #     DITraj_msg.header.frame_id = "vicon/world"
-        #     DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
+        DITraj_msg.times = self.di_ts
 
-        #     DITraj_msg.times = self.di_ts
+        for i in range(len(self.di_xs)):
+            di_state = DIState()
+            di_state.state = self.di_xs[i]
+            DITraj_msg.states.append(di_state)
 
-        #     for i in range(len(self.di_xs)):
-        #         di_state = DIState()
-        #         di_state.state = self.di_xs[i]
-        #         DITraj_msg.states.append(di_state)
+        for i in range(len(self.di_us)):
+            di_acc = DIAcc()
+            di_acc.acceleration = self.di_us[i]
+            DITraj_msg.accelerations.append(di_acc) 
 
-        #     for i in range(len(self.di_us)):
-        #         di_acc = DIAcc()
-        #         di_acc.acceleration = self.di_us[i]
-        #         DITraj_msg.accelerations.append(di_acc) 
+        self.pub_traj_.publish(DITraj_msg)
+        self.get_logger().info('Trajectory Committed')
+        # if self.first_cand_pub == False:
+        #     self.first_cand_pub = True
+        #     cand_sp_msg = CandSetpointStatus()
+        #     cand_sp_msg.first_cand_pub = self.first_cand_pub
 
-        #     self.pub_traj_.publish(DITraj_msg)
-        #     self.get_logger().info('Trajectory Committed')
         # else:
         #     self.get_logger().info('Not committed; Quad returning')
         #     self.mode = "Landing"

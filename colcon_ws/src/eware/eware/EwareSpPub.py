@@ -34,10 +34,10 @@ Things to test:
 class EwareSetpointPubNode(Node):
 
     def __init__(self):
-        super().__init__("eware")
+        super().__init__("eware_sp_node")
 
         # Declare all parameters
-        self.get_logger().info("Initializing params")
+        self.get_logger().info("Initializing Setpoint Publisher Node")
         self.mode = "Stopped"
         self.get_logger().info(self.mode)
         self.CandTraj_update_rate = 1.0 # Hz
@@ -48,6 +48,7 @@ class EwareSetpointPubNode(Node):
         
 
         # Declare all variables
+        self.committed_traj_available = False
         self.CandTraj_Timer_ = None
         self.SetpointPub_Timer_ = None
         self.CanTrajTimer_started = False
@@ -81,7 +82,7 @@ class EwareSetpointPubNode(Node):
         # Mission Status sub
         self.sub_mission_status_ = self.create_subscription(
             EwareMissionStatus,
-            'px4_100/gs/eware_mission_status', # Right now the name is fixed; TODO: Give as an arg
+            '/px4_100/gs/eware_mission_status', # Right now the name is fixed; TODO: Give as an arg
             self.mission_status_cb,
             10
         )
@@ -89,7 +90,7 @@ class EwareSetpointPubNode(Node):
         # Mission Status sub
         self.sub_cand_setpoint_status_ = self.create_subscription(
             CandSetpointStatus,
-            'px4_100/cand_setpoint_status', # Right now the name is fixed; TODO: Give as an arg
+            '/px4_100/cand_setpoint_status', # Right now the name is fixed; TODO: Give as an arg
             self.cand_setpoint_cb,
             10
         )
@@ -97,7 +98,7 @@ class EwareSetpointPubNode(Node):
         # Candidate trajectory Sub
         self.sub_cand_traj = self.create_subscription(
             DITrajectorySimple,
-            'px4_100/DI_committed_traj', # Right now the name is fixed; TODO: Give as an arg
+            '/px4_100/DI_committed_traj', # Right now the name is fixed; TODO: Give as an arg
             self.cand_traj_cb,
             10
         )
@@ -109,7 +110,8 @@ class EwareSetpointPubNode(Node):
 
         self.get_logger().info("Done initializing")   
 
-    def mission_status_cb(self, mission_status_msg):     
+    def mission_status_cb(self, mission_status_msg):   
+        # self.get_logger().info("----- In mission_status_cb -----") 
         if (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == False) and (self.visits < 2):
             # Create a local variale which tracks if this code triggered CandTraj_Timer_ to start
             # Start timer for the candidate trajectory generation [Pub]
@@ -118,10 +120,10 @@ class EwareSetpointPubNode(Node):
 
                 ## Start timer for the setpoint pub [local]
                 self.start_timers() 
-                self.CandTrajTimer_started = True
+                self.CanTrajTimer_started = True
                 self.SetpointPubTimer_started = True
 
-        elif ((mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True)) or (self.visits == 2) :
+        elif ((mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True)) or (self.visits == 2):
             if self.CanTrajTimer_started == True and self.SetpointPubTimer_started == True:
                 self.mode = "Stopped"
                 self.stop_timers()
@@ -129,15 +131,43 @@ class EwareSetpointPubNode(Node):
                 self.SetpointPubTimer_started == False
 
     def cand_setpoint_cb(self, cand_sp_msg):
+        self.get_logger().info("----- In cand_setpoint_cb -----") 
         '''
         Callback to create a link between the two nodes
         '''
         self.cand_precomp_done = cand_sp_msg.cand_precomp_done
+        # self.first_cand_pub = cand_sp_msg.first_cand_pub
 
-    def cand_traj_cb(self, cand_traj_msg):
+    def cand_traj_cb(self, DITraj_msg):
         '''
         Reads the candidate trajectory from cand_traj_msg so it can be used by the Setpoint_callback()
         '''
+        self.get_logger().info("----- In cand_traj_cb -----")
+        # # Initialize empty lists to store the extracted data
+        di_xs = []  # To store the states
+        di_us = []  # To store the accelerations
+        di_ts = []     # To store the times
+
+        # Extract times
+        di_ts = DITraj_msg.times  # Directly assigned since it's already a list
+
+        # Extract states
+        for state_msg in DITraj_msg.states:
+            di_xs.append(state_msg.state)
+
+        # Extract accelerations
+        for acc_msg in DITraj_msg.accelerations:
+            di_us.append(acc_msg.acceleration)
+
+        # # dt can be used to construct timestamps from the times array if needed
+        # dt = DITraj_msg.dt
+        
+        self.committed_tks_ = self.jlstore("committed_tks_", di_ts)
+        self.committed_xks_ = self.jlstore("committed_xks_", di_xs)
+        self.committed_uks_ = self.jlstore("committed_uks_", di_us)
+        self.committed_traj_available = True
+        self.get_logger().info("----- Committed Traj Update -----")
+
 
     def start_timers(self):
        
@@ -155,8 +185,14 @@ class EwareSetpointPubNode(Node):
         
         # Signal to EwareCandTraj Node to start the candidate trajectory node
         self.cand_sp_.publish(cand_sp_msg)
+
+        # While the first candidate trajectory is not published; dont start setpoint pub timer
+
         
         # Start the trajectory setpoint timer
+        # while self.first_cand_pub == False:
+        #     # self.get_logger().info(self.first_cand_pub)
+        #     self.get_logger().info("NO New Committed Traj available yet")
         self.SetpointPub_Timer_ = self.create_timer(1 / self.SetpointPub_update_rate, self.Setpoint_callback)
 
         self.get_logger().info('[SpNode:] Timers Started')
@@ -175,40 +211,61 @@ class EwareSetpointPubNode(Node):
         self.get_logger().info("[SpNode:] Mission Stopped; Landing")
 
 
+    # def wait_for_cand_sub(self):
+    #     '''
+    #     Wait for the candidate trajectory to be started
+    #     '''
+    #     while rclpy.ok():
+    #         # Check if all subscriptions are ready
+    #         if self.sub_cand_traj.subscription_handle:
+    #             break
+    #         # time.sleep(0.1)       
+
+
     def Setpoint_callback(self):
         '''
         Read the Candidate trajectory to publish the new setpoint at the current time
+
+        1. State Machine
+         - if the number of visits are 2 then stop timers 
+         - Updat the Soc 
+         - if quad is in landing mode:
         '''
+
+        if self.committed_traj_available == False:
+            self.get_logger().info('Candidate trajectory not available yet')
+            return
+
         self.get_logger().info('Publishing the new setpoint')
+
         
         # if (self.visits == 2):
         #     self.mode = "Stopped"
         #     self.stop_timers()
         #     return
 
-        # self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
+        self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
 
         # ## Update the soc
         # if self.mode != "Charging":
         #     self.update_battery_soc()
 
-        
-        
+            
         # self.get_logger().info(f"self.curr_SoC_: {self.curr_SoC_}")
-        # # Get the new setpoint
-        # # Store the trajectory internally
-        # # self.committed_tks = self.jlstore("committed_tks", self.committed_tks)
-        # # self.committed_xks = self.jlstore("committed_xks", self.committed_xks)
-        # # self.committed_uks = self.jlstore("committed_uks", self.committed_uks)
+        # Get the new setpoint
+        # Store the trajectory internally
+        # self.committed_tks = self.jlstore("committed_tks", self.committed_tks)
+        # self.committed_xks = self.jlstore("committed_xks", self.committed_xks)
+        # self.committed_uks = self.jlstore("committed_uks", self.committed_uks)
         
-        # # self.get_logger().info(f"committed_xks: {committed_xks_[1]}")
+        # self.get_logger().info(f"committed_xks: {committed_xks_[1]}")
 
-        # # Interpolate to get the setpoint
-        # # Print the end time of the candidate trajectory (being printing in Julia)
+        # Interpolate to get the setpoint
+        # Print the end time of the candidate trajectory (being printing in Julia)
         # self.get_logger().info(f"Current_time: {time.time() - self.start_time_}")
-        # # self.get_logger().info("Going to interpolate")
-        # di_state_sp_k, di_acc_sp_k = jl.seval("di_state_sp_k, di_acc_sp_k = Eware.DI_interpolate_traj(t_k, committed_tks_, committed_xks_, committed_uks_)")
-        # # self.get_logger().info("Back from interpolate")
+        # self.get_logger().info("Going to interpolate")
+        di_state_sp_k, di_acc_sp_k = jl.seval("di_state_sp_k, di_acc_sp_k = Eware.DI_interpolate_traj(t_k, committed_tks_, committed_xks_, committed_uks_)")
+        # self.get_logger().info("Back from interpolate")
 
         # # Check if the quadrotor is landing
         # if self.mode == "Landing":
@@ -223,44 +280,44 @@ class EwareSetpointPubNode(Node):
         #         self.get_logger().info(f"Charge_start_time: {self.charge_start_time}")
         #         self.curr_SoC_ = self.battery_SoC_cap_ # Restore battery level          
 
-        # # Publish the setpoint]
-        # px4_msg = TrajectorySetpoint()
-        # px4_msg.raw_mode = False;
+        # Publish the setpoint]
+        px4_msg = TrajectorySetpoint()
+        px4_msg.raw_mode = False;
 
-        # # Tajectorty Setpoint in in NED frame
-        # # Set pos
-        # px4_msg.position[0] = di_state_sp_k[1]
-        # px4_msg.position[1] = di_state_sp_k[0]
-        # px4_msg.position[2] = - di_state_sp_k[2]
+        # Tajectorty Setpoint in in NED frame
+        # Set pos
+        px4_msg.position[0] = di_state_sp_k[1]
+        px4_msg.position[1] = di_state_sp_k[0]
+        px4_msg.position[2] = - di_state_sp_k[2]
 
-        # # set vel
-        # px4_msg.velocity[0] = di_state_sp_k[4]
-        # px4_msg.velocity[1] = di_state_sp_k[3]
-        # px4_msg.velocity[2] = - di_state_sp_k[5]
+        # set vel
+        px4_msg.velocity[0] = di_state_sp_k[4]
+        px4_msg.velocity[1] = di_state_sp_k[3]
+        px4_msg.velocity[2] = - di_state_sp_k[5]
 
-        # # set acc
-        # self.get_logger().info(self.mode)
-        # if self.mode == "Charging":
-        #     self.get_logger().info('New acc == 0')
-        #     px4_msg.acceleration[1] = 0.0
-        #     px4_msg.acceleration[0] = 0.0
-        #     px4_msg.acceleration[2] = 0.0
-        # else:
-        #     self.get_logger().info('New acc == from cand')
-        #     px4_msg.acceleration[1] = di_acc_sp_k[0]
-        #     px4_msg.acceleration[0] = di_acc_sp_k[1]
-        #     px4_msg.acceleration[2] = -di_acc_sp_k[2]
-        # px4_msg.jerk[0] = 0
-        # px4_msg.jerk[1] = 0
-        # px4_msg.jerk[2] = 0
+        # set acc
+        self.get_logger().info(self.mode)
+        if self.mode == "Charging":
+            self.get_logger().info('New acc == 0')
+            px4_msg.acceleration[1] = 0.0
+            px4_msg.acceleration[0] = 0.0
+            px4_msg.acceleration[2] = 0.0
+        else:
+            self.get_logger().info('New acc == from cand')
+            px4_msg.acceleration[1] = di_acc_sp_k[0]
+            px4_msg.acceleration[0] = di_acc_sp_k[1]
+            px4_msg.acceleration[2] = -di_acc_sp_k[2]
+        px4_msg.jerk[0] = 0
+        px4_msg.jerk[1] = 0
+        px4_msg.jerk[2] = 0
 
-        # px4_msg.yaw = np.pi/2 - self.goal_yaw
-        # px4_msg.yawspeed = 0.0
+        px4_msg.yaw = np.pi/2 - self.goal_yaw
+        px4_msg.yawspeed = 0.0
 
-        # self.pub_px4_.publish(px4_msg)
+        self.pub_px4_.publish(px4_msg)
 
-        # # self.get_logger().info('Out Publishing the new setpoint')
-        # # self.get_logger().info(f"Setpoint publisher callback triggered. Current time: {t_k:.2f} seconds")
+        self.get_logger().info('Out Publishing the new setpoint')
+        # self.get_logger().info(f"Setpoint publisher callback triggered. Current time: {t_k:.2f} seconds")
 
     def update_battery_soc(self):
         self.curr_SoC_ = self.curr_SoC_ - (1 / self.SetpointPub_update_rate) * self.discharge_rate
