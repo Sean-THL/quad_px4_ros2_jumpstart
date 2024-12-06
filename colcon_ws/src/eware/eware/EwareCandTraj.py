@@ -38,6 +38,7 @@ class EwareCandTrajNode(Node):
 
         # Declare all parameters
         self.get_logger().info("Initializing Candidate Trajectory Node")
+        self.mode = "Stopped"
         self.CandTraj_update_rate = 1.0 # Hz
         self.SetpointPub_update_rate = 50.0 # Hz
         self.discharge_rate = 0.677
@@ -49,7 +50,7 @@ class EwareCandTrajNode(Node):
         # Declare all variables
         self.CandTraj_Timer_ = None
         self.SetpointPub_Timer_ = None
-        self.battery_SoC_cap_ = 12.0
+        self.battery_SoC_cap_ = 30.0
         self.curr_SoC_ = self.battery_SoC_cap_
         self.start_time_ = None 
         self.goal_yaw = 0.0 # in the ENU frame
@@ -97,7 +98,7 @@ class EwareCandTrajNode(Node):
         )
 
         # julia params
-        self.charge_pos = jl.seval("charge_pos = [0.0; 0.0; 0.3]")
+        self.charge_pos = jl.seval("charge_pos = [2.525; 2.992; 0.880]")
 
         # Julia varaible storage function
         self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")
@@ -161,16 +162,17 @@ class EwareCandTrajNode(Node):
                 self.stop_timers()
 
     def cand_setpoint_cb(self, cand_sp_msg):
-
         self.cand_timer_state = cand_sp_msg.cand_timer_state
-        self.mission_mode = cand_sp_msg.mission_mode        
+        self.charging = cand_sp_msg.charging
+        self.charge_start_time  = cand_sp_msg.charge_start_time   
+        self.curr_soc_state  = cand_sp_msg.battery_soc_state
 
     def start_timers(self):
        
         # Start mission and record start time
         self.start_time_ = time.time()
         self.CandTraj_Timer_ = self.create_timer(1 / self.CandTraj_update_rate, self.CandTraj_callback)
-        
+        self.mode = "Mission"
         # Immediately call the callbacks for time = 0
         self.CandTraj_callback()
 
@@ -198,62 +200,62 @@ class EwareCandTrajNode(Node):
             pre_di_ts, pre_di_xs, pre_di_us, pre_can_soc_end = jl.seval("pre_di_ts, pre_di_xs, pre_di_us, pre_can_soc_end = Eware.generate_candidate_traj(pre_t_k, pre_flat_states_k, pre_battery_soc_k, pre_discharge_rate, pre_charge_pos)")
             return 
         
-        self.get_logger().info('Generating new Candidate Trajectory')
+
         # # Check if quad has charged
-        # if (time.time() >= (self.charge_start_time + self.charge_duration)) and (self.mode == "Charging"):
-        #     self.mode = "Mission"
-        #     self.visits += 1
+        if self.mode == "Landing":
+            if (self.charging == True and self.charge_start_time is not None):
+                if (time.time() >= (self.charge_start_time + self.charge_duration)):
+                    self.mode = "Mission"
+                    self.visits += 1
 
-        # self.get_logger().info(self.mode)
+        if self.mode != "Mission":
+            return
 
-        # if self.mode != "Mission":
-        #     return
-
+        self.get_logger().info('Generating new Candidate Trajectory')
         # Candidate Trajectory Replanning
 
         # Current time
+        self.get_logger().info(f"Curr_soc_state: {self.curr_soc_state}")
         self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
         self.flat_states_k = jl.seval("flat_states_k = [state_; state_yaw]")
-        self.battery_soc_k = self.jlstore("battery_soc_k", self.curr_SoC_)
+        self.battery_soc_k = self.jlstore("battery_soc_k", self.curr_soc_state)
         self.discharge_rate_jl = self.jlstore("discharge_rate_jl", self.discharge_rate)
         self.di_ts, self.di_xs, self.di_us, self.can_soc_end = jl.seval("di_ts, di_xs, di_us, can_soc_end = Eware.generate_candidate_traj(t_k, flat_states_k, battery_soc_k, discharge_rate_jl, charge_pos)")
         
 
         ## Keep the copy of the committed trajectory internally and also publish it for possible plotting
-        # if self.can_soc_end > 0.0:
-            
-            # self.committed_tks_ = self.jlstore("committed_tks_", self.di_ts)
-            # self.committed_xks_ = self.jlstore("committed_xks_", self.di_xs)
-            # self.committed_uks_ = self.jlstore("committed_uks_", self.di_us)
+        if self.can_soc_end > 0.0:
 
-        # For now validate the candidate trajectory right now
-        DITraj_msg = DITrajectorySimple()
-        # msg.header.stamp = rclpy.Time.now()
-        DITraj_msg.header.frame_id = "vicon/world"
-        DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
+            # For now validate the candidate trajectory right now
+            DITraj_msg = DITrajectorySimple()
+            # msg.header.stamp = rclpy.Time.now()
+            DITraj_msg.header.frame_id = "vicon/world"
+            DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
 
-        DITraj_msg.times = self.di_ts
+            DITraj_msg.times = self.di_ts
 
-        for i in range(len(self.di_xs)):
-            di_state = DIState()
-            di_state.state = self.di_xs[i]
-            DITraj_msg.states.append(di_state)
+            for i in range(len(self.di_xs)):
+                di_state = DIState()
+                di_state.state = self.di_xs[i]
+                DITraj_msg.states.append(di_state)
 
-        for i in range(len(self.di_us)):
-            di_acc = DIAcc()
-            di_acc.acceleration = self.di_us[i]
-            DITraj_msg.accelerations.append(di_acc) 
+            for i in range(len(self.di_us)):
+                di_acc = DIAcc()
+                di_acc.acceleration = self.di_us[i]
+                DITraj_msg.accelerations.append(di_acc) 
 
-        self.pub_traj_.publish(DITraj_msg)
-        self.get_logger().info('Trajectory Committed')
+            self.pub_traj_.publish(DITraj_msg)
+            self.get_logger().info('Trajectory Committed')
         # if self.first_cand_pub == False:
         #     self.first_cand_pub = True
         #     cand_sp_msg = CandSetpointStatus()
         #     cand_sp_msg.first_cand_pub = self.first_cand_pub
-
-        # else:
-        #     self.get_logger().info('Not committed; Quad returning')
-        #     self.mode = "Landing"
+        else:
+            self.get_logger().info('Not committed; Quad returning')
+            cand_sp_msg = CandSetpointStatus()
+            cand_sp_msg.landing = True
+            self.mode = "Landing"
+            self.cand_sp_.publish(cand_sp_msg)
         
         # self.get_logger().info('Out Generating new Candidate Trajectory')
 
