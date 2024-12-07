@@ -55,7 +55,7 @@ class EwareSetpointPubNode(Node):
         self.SetpointPubTimer_started = False
         self.cand_precomp_done = False # Only init here; later replaced by the sub
 
-        self.battery_SoC_cap_ = 12.0
+        self.battery_SoC_cap_ = 30.0
         self.curr_SoC_ = self.battery_SoC_cap_
         self.start_time_ = None 
         self.goal_yaw = 0.0 # in the ENU frame
@@ -102,6 +102,10 @@ class EwareSetpointPubNode(Node):
             self.cand_traj_cb,
             10
         )
+
+        # Create a message instance and reuse it 
+        self.cand_sp_msg = CandSetpointStatus()
+
         # julia params
         self.charge_pos = jl.seval("charge_pos = [2.525; 2.992; 0.880]")
 
@@ -118,10 +122,15 @@ class EwareSetpointPubNode(Node):
             if self.CanTrajTimer_started == False and self.SetpointPubTimer_started == False and self.cand_precomp_done == True:
                 #### Start timer for the candidate trajectory generation [Pub]
 
-                ## Start timer for the setpoint pub [local]
-                self.start_timers() 
-                self.CanTrajTimer_started = True
-                self.SetpointPubTimer_started = True
+                # Check if the first committed trajectory is aviailable:
+                if self.committed_traj_available == True:
+                    ## Start timer for the setpoint pub [local]
+                    self.start_timers() 
+                    self.CanTrajTimer_started = True
+                    self.SetpointPubTimer_started = True
+                else:
+                    self.get_logger().info('Candidate trajectory not available yet')
+
 
         elif ((mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True)) or (self.visits == 2):
             if self.CanTrajTimer_started == True and self.SetpointPubTimer_started == True:
@@ -177,16 +186,15 @@ class EwareSetpointPubNode(Node):
         
         # Start mission and record start time
         self.mode = "Mission"
-        cand_sp_msg = CandSetpointStatus()
-        cand_sp_msg.cand_timer_state = True
-        cand_sp_msg.mission_mode = self.mode
-        cand_sp_msg.battery_soc_state = self.curr_SoC_
+        self.cand_sp_msg.cand_timer_state = True
+        self.cand_sp_msg.mission_mode = self.mode
+        self.cand_sp_msg.battery_soc_state = self.curr_SoC_
         
         # Store ther start time
         self.start_time_ = time.time()
         
         # Signal to EwareCandTraj Node to start the candidate trajectory node
-        self.cand_sp_.publish(cand_sp_msg)
+        self.cand_sp_.publish(self.cand_sp_msg)
 
         # While the first candidate trajectory is not published; dont start setpoint pub timer
 
@@ -203,9 +211,8 @@ class EwareSetpointPubNode(Node):
     def stop_timers(self):
 
         # Signal to stop the candidate trajectory timer in the other node
-        cand_sp_msg = CandSetpointStatus()
-        cand_sp_msg.cand_timer_state = False
-        self.cand_sp_.publish(cand_sp_msg)
+        self.cand_sp_msg.cand_timer_state = False
+        self.cand_sp_.publish(self.cand_sp_msg)
 
         self.SetpointPub_Timer_.destroy()
         self.SetpointPub_Timer_ = None
@@ -234,17 +241,18 @@ class EwareSetpointPubNode(Node):
          - if quad is in landing mode:
         '''
 
-        if self.committed_traj_available == False:
-            self.get_logger().info('Candidate trajectory not available yet')
-            return
+        # if self.committed_traj_available == False:
+        #     self.get_logger().info('Candidate trajectory not available yet')
+        #     return
 
-        # self.get_logger().info('Publishing the new setpoint')
+        self.get_logger().info('Publishing the new setpoint')
 
         
-        if (self.visits == 2):
-            self.mode = "Stopped"
-            self.stop_timers()
-            return
+        # if (self.visits == 2):
+        #     self.get_logger().info('HERE')
+        #     self.mode = "Stopped"
+        #     self.stop_timers()
+        #     return
 
         self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
 
@@ -266,25 +274,25 @@ class EwareSetpointPubNode(Node):
         di_state_sp_k, di_acc_sp_k = jl.seval("di_state_sp_k, di_acc_sp_k = Eware.DI_interpolate_traj(t_k, committed_tks_, committed_xks_, committed_uks_)")
         # self.get_logger().info("Back from interpolate")
 
-        # Check if the quadrotor is landing
-        if self.landing == True:
-            ## check distance to charge_pos
-            # self.get_logger().info("Going at_charging")
-            at_charging = jl.seval("at_charging = Eware.reached_charging_station(state_, charge_pos)")
-            # self.get_logger().info("Back at_charging")
-            if (at_charging == 1):
-                self.mode = "Charging"
-                # self.get_logger().info("Mission Stopped; Landing")
-                self.charge_start_time = time.time()
+        # # Check if the quadrotor is landing
+        # if self.landing == True:
+        #     ## check distance to charge_pos
+        #     # self.get_logger().info("Going at_charging")
+        #     at_charging = jl.seval("at_charging = Eware.reached_charging_station(state_, charge_pos)")
+        #     # self.get_logger().info("Back at_charging")
+        #     if (at_charging == 1):
+        #         self.mode = "Charging"
+        #         # self.get_logger().info("Mission Stopped; Landing")
+        #         self.charge_start_time = time.time()
                 
-                # Pub charge time
-                cand_sp_msg = CandSetpointStatus()
-                cand_sp_msg.charge_start_time = self.charge_start_time
-                cand_sp_msg.charging = True
-                self.cand_sp_.publish(cand_sp_msg)
+        #         # Pub charge time
+        #         cand_sp_msg = CandSetpointStatus()
+        #         cand_sp_msg.charge_start_time = self.charge_start_time
+        #         cand_sp_msg.charging = True
+        #         self.cand_sp_.publish(cand_sp_msg)
 
-                self.get_logger().info(f"Charge_start_time: {self.charge_start_time}")
-                self.curr_SoC_ = self.battery_SoC_cap_ # Restore battery level          
+        #         self.get_logger().info(f"Charge_start_time: {self.charge_start_time}")
+        #         self.curr_SoC_ = self.battery_SoC_cap_ # Restore battery level          
 
         # Publish the setpoint]
         px4_msg = TrajectorySetpoint()
@@ -322,12 +330,14 @@ class EwareSetpointPubNode(Node):
 
         self.pub_px4_.publish(px4_msg)
 
-        ## Update the soc and Publish new battery state
+        # ## Update the soc and Publish new battery state
+        self.get_logger().info(self.mode)
         if self.mode != "Charging":
+            # self.get_logger().info("Updating soc")
+            # self.get_logger().info(f"Current SoC: {self.curr_SoC_}")
             self.update_battery_soc()
-            cand_sp_msg = CandSetpointStatus()
-            cand_sp_msg.battery_soc_state = self.curr_SoC_
-            self.cand_sp_.publish(cand_sp_msg)
+            self.cand_sp_msg.battery_soc_state = self.curr_SoC_
+            self.cand_sp_.publish(self.cand_sp_msg)
 
 
         # self.get_logger().info('Out Publishing the new setpoint')
