@@ -47,6 +47,7 @@ class EwareCandTrajNode(Node):
         self.first_cand_pub = False
         self.cand_timer_state = None        
         self.cand_precomp_done = False
+        self.just_charged = False
         # Declare all variables
         self.CandTraj_Timer_ = None
         self.SetpointPub_Timer_ = None
@@ -100,7 +101,7 @@ class EwareCandTrajNode(Node):
             self.cand_setpoint_cb,
             10
         )
-        
+
         # Create a message instance and reuse it 
         self.cand_sp_msg = CandSetpointStatus()
 
@@ -163,8 +164,6 @@ class EwareCandTrajNode(Node):
             if self.CandTraj_Timer_ is None:
                 self.start_timers()
         elif ((mission_status_msg.mission_start == False) and (mission_status_msg.mission_quit == True)) or (self.cand_timer_state == False):
-            self.get_logger().info(f"self.cand_timer_state: {self.cand_timer_state}")
-            self.get_logger().info("About to shut down the cand traj timer")
             if self.CandTraj_Timer_ is not None:
                 self.stop_timers()
 
@@ -234,15 +233,16 @@ class EwareCandTrajNode(Node):
             return 
         
 
-        # # # Check if quad has charged
-        # if self.mode == "Landing":
-        #     if (self.charging == True and self.charge_start_time is not None):
-        #         if (time.time() >= (self.charge_start_time + self.charge_duration)):
-        #             self.mode = "Mission"
-        #             self.visits += 1
+        # # Check if quad has charged
+        if self.charging == True:
+            if self.charge_start_time != 0.0:
+                if (time.time() >= (self.charge_start_time + self.charge_duration)):
+                    self.mode = "Mission"
+                    self.just_charged = True
+                    self.visits += 1
 
-        # if self.mode != "Mission":
-        #     return
+        if self.mode != "Mission":
+            return
 
         self.get_logger().info('Generating new Candidate Trajectory')
         # Candidate Trajectory Replanning
@@ -281,9 +281,18 @@ class EwareCandTrajNode(Node):
 
             self.pub_traj_.publish(DITraj_msg)
             self.get_logger().info('Trajectory Committed')
+
+            if self.just_charged == True:
+                self.cand_sp_msg.landing = False
+                self.cand_sp_msg.charging = False
+                self.cand_sp_msg.done_charging = True
+                self.cand_sp_.publish(self.cand_sp_msg)
+                self.just_charged = False
+                
         else:
             self.get_logger().info('Not committed; Quad returning')
             self.cand_sp_msg.landing = True
+            self.cand_sp_msg.charging = False
             self.mode = "Landing"
             self.cand_sp_.publish(self.cand_sp_msg)
         

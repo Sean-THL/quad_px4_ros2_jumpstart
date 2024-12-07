@@ -79,6 +79,13 @@ class EwareSetpointPubNode(Node):
 
         # Subs
         
+        # Vehicle Position sub
+        self.sub_state_ = self.create_subscription( 
+                VehicleLocalPosition,
+                'px4_100/fmu/out/vehicle_local_position',
+                self.state_callback,
+                qos_profile_sensor_data)
+
         # Mission Status sub
         self.sub_mission_status_ = self.create_subscription(
             EwareMissionStatus,
@@ -114,6 +121,39 @@ class EwareSetpointPubNode(Node):
 
         self.get_logger().info("Done initializing")   
 
+
+    def state_callback(self, state_msg):
+
+        if not (state_msg.xy_valid  and state_msg.z_valid  and state_msg.heading_good_for_control):
+            return
+        ## Vehicle local position provides 
+        # self.state = np.array([
+        #     state_msg.y,
+        #     state_msg.x,
+        #     -state_msg.z,
+        #     state_msg.vy,
+        #     state_msg.vx,
+        #     -state_msg.vz,
+        #     state_msg.ay,
+        #     state_msg.ax,
+        #     -state_msg.az])
+
+        # self.state_yaw = np.pi/2 - state_msg.heading # in ENU coords
+        # self.get_logger().info("Getting new state")
+        self.state_ = self.jlstore("state_", [
+                                    state_msg.y, 
+                                    state_msg.x, 
+                                    -state_msg.z,
+                                    state_msg.vy,
+                                    state_msg.vx,
+                                    -state_msg.vz,
+                                    state_msg.ay,
+                                    state_msg.ax,
+                                    -state_msg.az])
+
+        self.state_yaw_ = self.jlstore("state_yaw", np.pi/2 - state_msg.heading)
+
+
     def mission_status_cb(self, mission_status_msg):   
         # self.get_logger().info("----- In mission_status_cb -----") 
         if (mission_status_msg.mission_start == True) and (mission_status_msg.mission_quit == False) and (self.visits < 2):
@@ -146,6 +186,8 @@ class EwareSetpointPubNode(Node):
         '''
         self.cand_precomp_done = cand_sp_msg.cand_precomp_done
         self.landing = cand_sp_msg.landing
+        self.charging = cand_sp_msg.charging
+        self.done_charging = cand_sp_msg.done_charging
         # self.first_cand_pub = cand_sp_msg.first_cand_pub
 
     def cand_traj_cb(self, DITraj_msg):
@@ -274,25 +316,30 @@ class EwareSetpointPubNode(Node):
         di_state_sp_k, di_acc_sp_k = jl.seval("di_state_sp_k, di_acc_sp_k = Eware.DI_interpolate_traj(t_k, committed_tks_, committed_xks_, committed_uks_)")
         # self.get_logger().info("Back from interpolate")
 
-        # # Check if the quadrotor is landing
-        # if self.landing == True:
-        #     ## check distance to charge_pos
-        #     # self.get_logger().info("Going at_charging")
-        #     at_charging = jl.seval("at_charging = Eware.reached_charging_station(state_, charge_pos)")
-        #     # self.get_logger().info("Back at_charging")
-        #     if (at_charging == 1):
-        #         self.mode = "Charging"
-        #         # self.get_logger().info("Mission Stopped; Landing")
-        #         self.charge_start_time = time.time()
+        # Check if the quadrotor is landing
+        self.get_logger().info(f"self.landing: {self.landing}")
+        self.get_logger().info(f"self.charging: {self.charging}")
+        if self.landing == True and self.charging == False:
+            ## check distance to charge_pos
+            self.get_logger().info("Going at_charging")
+            at_charging = jl.seval("at_charging = Eware.reached_charging_station(state_, charge_pos)")
+            self.get_logger().info("Back at_charging")
+            if (at_charging == 1):
+                self.mode = "Charging"
+                # self.get_logger().info("Mission Stopped; Landing")
+                self.charge_start_time = time.time()
+                self.curr_SoC_ = self.battery_SoC_cap_ # Restore battery level 
                 
-        #         # Pub charge time
-        #         cand_sp_msg = CandSetpointStatus()
-        #         cand_sp_msg.charge_start_time = self.charge_start_time
-        #         cand_sp_msg.charging = True
-        #         self.cand_sp_.publish(cand_sp_msg)
+                # Pub charge time
+                self.cand_sp_msg.charge_start_time = self.charge_start_time
+                self.cand_sp_msg.charging = True
+                self.cand_sp_msg.battery_soc_state = self.curr_SoC_
+                self.cand_sp_.publish(self.cand_sp_msg)
+                self.get_logger().info(f"Charge_start_time: {self.charge_start_time}")         
+        elif self.mode == "Charging" and self.done_charging == True:
+            ## Back to mission
+            self.mode = "Mission"
 
-        #         self.get_logger().info(f"Charge_start_time: {self.charge_start_time}")
-        #         self.curr_SoC_ = self.battery_SoC_cap_ # Restore battery level          
 
         # Publish the setpoint]
         px4_msg = TrajectorySetpoint()
@@ -313,6 +360,11 @@ class EwareSetpointPubNode(Node):
         # self.get_logger().info(self.mode)
         if self.mode == "Charging":
             self.get_logger().info('New acc == 0')
+
+            px4_msg.velocity[0] = 0.0
+            px4_msg.velocity[1] = 0.0
+            px4_msg.velocity[2] = 0.0
+
             px4_msg.acceleration[1] = 0.0
             px4_msg.acceleration[0] = 0.0
             px4_msg.acceleration[2] = 0.0
