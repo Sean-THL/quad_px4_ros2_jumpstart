@@ -46,6 +46,7 @@ class EwareSetpointPubNode(Node):
         # Declare all variables
         self.just_charged_wiating_traj = False
         self.committed_traj_available = False
+        self.state_local_available = False
         self.SetpointPub_Timer_ = None
         self.CanTrajTimer_started = False
         self.SetpointPubTimer_started = False
@@ -149,6 +150,7 @@ class EwareSetpointPubNode(Node):
                                     -state_msg.az])
 
         self.state_yaw_ = self.jlstore("state_yaw", np.pi/2 - state_msg.heading)
+        self.state_local_available = True
 
 
     def mission_status_cb(self, mission_status_msg):   
@@ -160,8 +162,11 @@ class EwareSetpointPubNode(Node):
                 #### Start timer for the candidate trajectory generation [Pub]
 
                 # Check if the first committed trajectory is aviailable:
-                if self.committed_traj_available == True:
+                if self.committed_traj_available == True and self.state_local_available == True:
                     ## Start timer for the setpoint pub [local]
+
+                    ## Do the precompilation for the julia finctions local to this node
+                    self.sp_julia_precomp()
                     self.start_timers() 
                     self.CanTrajTimer_started = True
                     self.SetpointPubTimer_started = True
@@ -247,6 +252,16 @@ class EwareSetpointPubNode(Node):
         self.get_logger().info('Timers stopped')
         self.get_logger().info("Mission Stopped; Landing")     
 
+    def sp_julia_precomp(self):
+        self.get_logger().info("Starting setpoint node Julia utilities precomp") 
+        # Dry run the interpolation
+        pre_t_k = self.jlstore("pre_t_k", 0.0)
+        pre_di_state_sp_k, pre_di_acc_sp_k = jl.seval("pre_di_state_sp_k, pre_di_acc_sp_k = Eware.DI_interpolate_traj(pre_t_k, committed_tks_, committed_xks_, committed_uks_)")
+
+        # Dry run the dist_to_charge_calc
+        at_charging = jl.seval("at_charging = Eware.reached_charging_station(state_, charge_pos)")
+        self.get_logger().info("Finished setpoint node Julia utilities precomp") 
+        return
 
     def Setpoint_callback(self):
         '''
@@ -305,7 +320,8 @@ class EwareSetpointPubNode(Node):
         if self.just_charged_wiating_traj == True and self.cand_mode == "Mission":
             self.just_charged_wiating_traj = False
             self.mode = "Mission"
-    
+            self.SpToCand.sp_mode = self.mode
+            self.pub_SpToCand.publish(self.SpToCand)   
 
         # Publish the setpoint]
         self.px4_msg.raw_mode = False;
