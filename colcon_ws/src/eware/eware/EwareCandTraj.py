@@ -233,16 +233,16 @@ class EwareCandTrajNode(Node):
             self.mode = "Mission"
             self.just_charged = True
         
-        self.get_logger().info(f"self.mode: {self.mode}")
+        # self.get_logger().info(f"self.mode: {self.mode}")
         if self.mode != "Mission":
             return
 
 
-        self.get_logger().info('Generating new Candidate Trajectory')
+        # self.get_logger().info('Generating new Candidate Trajectory')
         # Candidate Trajectory Replanning
 
         # Current time
-        self.get_logger().info(f"Curr_soc_state: {self.curr_soc_state}")
+        # self.get_logger().info(f"Curr_soc_state: {self.curr_soc_state}")
         self.t_k = self.jlstore("t_k", time.time() - self.start_time_)
         self.flat_states_k = jl.seval("flat_states_k = [state_; state_yaw]")
         self.battery_soc_k = self.jlstore("battery_soc_k", self.curr_soc_state)
@@ -274,7 +274,7 @@ class EwareCandTrajNode(Node):
                 DITraj_msg.accelerations.append(di_acc) 
 
             self.pub_traj_.publish(DITraj_msg)
-            self.get_logger().info('Trajectory Committed')
+            # self.get_logger().info('Trajectory Committed')
 
             if self.just_charged == True:
                 self.CandToSp.cand_mode = self.mode
@@ -282,7 +282,7 @@ class EwareCandTrajNode(Node):
                 self.just_charged = False
                 
         else:
-            self.get_logger().info('Not committed; Quad returning')
+            # self.get_logger().info('Not committed; Quad returning')
             self.mode = "Landing"
             self.CandToSp.cand_mode = self.mode
             self.pub_CandToSp.publish(self.CandToSp)

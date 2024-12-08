@@ -247,8 +247,9 @@ class EwareSetpointPubNode(Node):
         self.SpToCand.cand_timer_state = False
         self.pub_SpToCand.publish(self.SpToCand)
 
-        self.SetpointPub_Timer_.destroy()
-        self.SetpointPub_Timer_ = None
+        if self.SetpointPub_Timer_ is not None:
+            self.SetpointPub_Timer_.destroy()
+            self.SetpointPub_Timer_ = None
         self.get_logger().info('Timers stopped')
         self.get_logger().info("Mission Stopped; Landing")     
 
@@ -310,17 +311,20 @@ class EwareSetpointPubNode(Node):
         elif (self.mode == "Charging") and (time.time() >= (self.charge_start_time + self.charge_duration)):
             self.get_logger().info("---- Charging Done ---- ")
             self.mode = "Charged"
-            self.just_charged = True
+            self.just_charged_wiating_traj = True
             # Signal to the candidate trajectory to restart the mission
             self.SpToCand.sp_mode = self.mode
             self.pub_SpToCand.publish(self.SpToCand)
             self.visits += 1
 
-
+        # self.get_logger().info(f"just_charged_wiating_traj: {self.just_charged_wiating_traj}") 
         if self.just_charged_wiating_traj == True and self.cand_mode == "Mission":
+            self.get_logger().info(" -------Checking if just charged ------")
+            self.get_logger().info(f"SP Mode: {self.mode}") 
             self.just_charged_wiating_traj = False
             self.mode = "Mission"
             self.SpToCand.sp_mode = self.mode
+            self.get_logger().info(f"SP Mode: {self.mode}") 
             self.pub_SpToCand.publish(self.SpToCand)   
 
         # Publish the setpoint]
