@@ -52,7 +52,7 @@ class EwareSetpointPubNode(Node):
         self.SetpointPubTimer_started = False
         self.cand_precomp_done = False # Only init here; later replaced by the sub
 
-        self.battery_SoC_cap_ = 15.0
+        self.battery_SoC_cap_ = 30.0
         self.curr_SoC_ = self.battery_SoC_cap_
         self.start_time_ = None 
         self.goal_yaw = 0.0 # in the ENU frame
@@ -112,7 +112,7 @@ class EwareSetpointPubNode(Node):
         self.px4_msg = TrajectorySetpoint()
 
         # julia params
-        self.charge_pos = jl.seval("charge_pos = [2.525; 2.992; 0.880]")
+        self.charge_pos = jl.seval("charge_pos = [0.0; 0.0; 0.3]")
 
         # Julia varaible storage function
         self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")

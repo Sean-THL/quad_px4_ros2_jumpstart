@@ -48,7 +48,7 @@ class EwareCandTrajNode(Node):
         self.just_charged = False
         # Declare all variables
         self.CandTraj_Timer_ = None
-        self.battery_SoC_cap_ = 15.0
+        self.battery_SoC_cap_ = 30.0
         self.curr_soc_state = self.battery_SoC_cap_
         self.get_logger().info(f"Curr_soc_state: {self.curr_soc_state}")
 
@@ -103,7 +103,7 @@ class EwareCandTrajNode(Node):
         self.DITraj_msg = DITrajectorySimple()
 
         # julia params
-        self.charge_pos = jl.seval("charge_pos = [2.525; 2.992; 0.880]")
+        self.charge_pos = jl.seval("charge_pos = [0.0; 0.0; 0.3]")
 
         # Julia varaible storage function
         self.jlstore = jl.seval("(k, v) -> (@eval $(Symbol(k)) = $v; return)")
