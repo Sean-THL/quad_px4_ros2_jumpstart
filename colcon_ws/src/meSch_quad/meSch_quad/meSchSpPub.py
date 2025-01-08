@@ -54,6 +54,7 @@ class meSchSetpointPubNode(Node):
 
         self.battery_SoC_cap_ = 15.0
         self.curr_SoC_ = self.battery_SoC_cap_
+        self.remaning_flight_time_ = self.battery_SoC_cap_ / self.discharge_rate
         self.start_time_ = None 
         self.goal_yaw = 0.0 # in the ENU frame
         self.visits = 0
@@ -375,6 +376,7 @@ class meSchSetpointPubNode(Node):
             # Update the battery soc
             self.update_battery_soc()
             self.SpToCand.battery_soc_state = self.curr_SoC_
+            self.SpToCand.remaning_battery_time = self.remaning_flight_time_
             self.pub_SpToCand.publish(self.SpToCand)
         
         self.pub_px4_.publish(self.px4_msg)
@@ -383,6 +385,7 @@ class meSchSetpointPubNode(Node):
 
     def update_battery_soc(self):
         self.curr_SoC_ = self.curr_SoC_ - (1 / self.SetpointPub_update_rate) * self.discharge_rate
+        self.remaning_flight_time_ = self.curr_SoC_ / self.discharge_rate
 
 
 def main(args = None):

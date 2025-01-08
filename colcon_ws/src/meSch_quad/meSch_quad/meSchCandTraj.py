@@ -50,6 +50,7 @@ class meSchCandTrajNode(Node):
         self.CandTraj_Timer_ = None
         self.battery_SoC_cap_ = 15.0
         self.curr_soc_state = self.battery_SoC_cap_
+        self.remaining_flight_time = self.curr_soc_state / self.discharge_rate
         self.get_logger().info(f"Curr_soc_state: {self.curr_soc_state}")
 
         # self.curr_SoC_ = self.battery_SoC_cap_
@@ -57,7 +58,7 @@ class meSchCandTrajNode(Node):
         self.goal_yaw = 0.0 # in the ENU frame
         self.visits = 0
         self.charge_start_time = 0.0
-
+        self.curr_cand_id_ = 0
 
         # Julia
         # Creating variable storage function
@@ -72,8 +73,10 @@ class meSchCandTrajNode(Node):
         # Pubs
         self.pub_traj_ = self.create_publisher(DITrajectorySimple, "/px4_100/DI_committed_traj", 10)
         self.pub_CandToSp = self.create_publisher(CandToSp, "/px4_100/CandToSp", 10)
-        # Subs
+        self.pub_px4_100_meSch_base = self.create_publisher(QuadToBaseMesch, "/px4_100/meSch_quad_status", 10)
 
+
+        # Subs
         
         # Vehicle Position sub
         self.sub_state_ = self.create_subscription( 
@@ -98,10 +101,19 @@ class meSchCandTrajNode(Node):
             10
         )
 
+        # Message from the meSch base about committing the trajectory or not
+        self.sub_meSch_base_decision_ = self.create_subscription(
+            BaseToQuadMesch,
+            '/px4_100/gs/meSch_base_central',
+            self.meSch_base_cb,
+            10
+        )
+
 
         # Create a message instance and reuse it 
         self.CandToSp  = CandToSp()
         self.DITraj_msg = DITrajectorySimple()
+        self.QuadTomeSchbase_msg = QuadToBaseMesch()
 
         # julia params
         self.charge_pos = jl.seval("charge_pos = [2.525; 2.992; 0.880]")
@@ -169,6 +181,12 @@ class meSchCandTrajNode(Node):
         self.cand_timer_state = cand_sp_msg.cand_timer_state
         self.sp_mode = cand_sp_msg.sp_mode
         self.curr_soc_state = cand_sp_msg.battery_soc_state
+        self.remaining_flight_time = cand_sp_msg.remaning_battery_time
+
+
+    def meSch_base_cb(self, meSch_base_msg):
+        self.meSch_base_cand_id = meSch_base_msg.cand_id
+        self.meSch_base_commit_cand_traj = meSch_base_msg.commit_cand_traj
 
     def start_timers(self):
        
@@ -229,6 +247,9 @@ class meSchCandTrajNode(Node):
             
             return 
         
+        # Always increment the counter 
+        self.curr_cand_id_ += 1
+
         # If the quad has charged and sp has moved into mission mode start publishing trajectories
         if self.mode != "Mission" and self.sp_mode == "Charged":
             self.mode = "Mission"
@@ -253,40 +274,62 @@ class meSchCandTrajNode(Node):
 
         ## Keep the copy of the committed trajectory internally and also publish it for possible plotting
         # self.get_logger().info("Updating soc")
-        self.get_logger().info(f"can_soc_end: {self.can_soc_end}")
-        if self.can_soc_end > 0.0:
 
-            # For now validate the candidate trajectory right now
-            DITraj_msg = DITrajectorySimple()
-            # msg.header.stamp = rclpy.Time.now()
-            DITraj_msg.header.frame_id = "vicon/world"
-            DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
+        # Send the remaining flight time to the meSch_base for central decision making
+        
+        self.QuadTomeSchbase_msg.quad_name = "px4_100"
+        self.QuadTomeSchbase_msg.cand_id = self.curr_cand_id_
+        self.QuadTomeSchbase_msg.remaining_flight_time = self.remaining_flight_time
 
-            DITraj_msg.times = self.di_ts
+        ## While message not received; stay in this loop 
+        while (self.curr_cand_id_ != self.meSch_base_cand_id):
+            self.get_logger().info('Waiting for base')  
+            
 
-            for i in range(len(self.di_xs)):
-                di_state = DIState()
-                di_state.state = self.di_xs[i]
-                DITraj_msg.states.append(di_state)
+        if (meSch_base_commit_cand_traj != True):
+            self.get_logger().info('meSch; Trajectory not committed')
 
-            for i in range(len(self.di_us)):
-                di_acc = DIAcc()
-                di_acc.acceleration = self.di_us[i]
-                DITraj_msg.accelerations.append(di_acc) 
-
-            self.pub_traj_.publish(DITraj_msg)
-            # self.get_logger().info('Trajectory Committed')
-
-            if self.just_charged == True:
-                self.CandToSp.cand_mode = self.mode
-                self.pub_CandToSp.publish(self.CandToSp)
-                self.just_charged = False
-                
-        else:
-            # self.get_logger().info('Not committed; Quad returning')
             self.mode = "Landing"
             self.CandToSp.cand_mode = self.mode
             self.pub_CandToSp.publish(self.CandToSp)
+        else:
+            self.get_logger().info('Gap flags are fine')            
+            self.get_logger().info('Now checking eware...')
+            # Eware Check
+            self.get_logger().info(f"can_soc_end: {self.can_soc_end}")
+            if self.can_soc_end > 0.0:
+
+                # For now validate the candidate trajectory right now
+                DITraj_msg = DITrajectorySimple()
+                # msg.header.stamp = rclpy.Time.now()
+                DITraj_msg.header.frame_id = "vicon/world"
+                DITraj_msg.dt = 1.0 / self.CandTraj_update_rate
+
+                DITraj_msg.times = self.di_ts
+
+                for i in range(len(self.di_xs)):
+                    di_state = DIState()
+                    di_state.state = self.di_xs[i]
+                    DITraj_msg.states.append(di_state)
+
+                for i in range(len(self.di_us)):
+                    di_acc = DIAcc()
+                    di_acc.acceleration = self.di_us[i]
+                    DITraj_msg.accelerations.append(di_acc) 
+
+                self.pub_traj_.publish(DITraj_msg)
+                # self.get_logger().info('Trajectory Committed')
+
+                if self.just_charged == True:
+                    self.CandToSp.cand_mode = self.mode
+                    self.pub_CandToSp.publish(self.CandToSp)
+                    self.just_charged = False
+                    
+            else:
+                # self.get_logger().info('Not committed; Quad returning')
+                self.mode = "Landing"
+                self.CandToSp.cand_mode = self.mode
+                self.pub_CandToSp.publish(self.CandToSp)
             
         
         # self.get_logger().info('Out Generating new Candidate Trajectory')
