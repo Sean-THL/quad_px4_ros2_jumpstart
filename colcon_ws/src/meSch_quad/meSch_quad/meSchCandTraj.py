@@ -280,15 +280,16 @@ class meSchCandTrajNode(Node):
         self.QuadTomeSchbase_msg.quad_name = "px4_100"
         self.QuadTomeSchbase_msg.cand_id = self.curr_cand_id_
         self.QuadTomeSchbase_msg.remaining_flight_time = self.remaining_flight_time
-
+        elf.pub_px4_100_meSch_base.publish(self.QuadTomeSchbase_msg)
+        
         ## While message not received; stay in this loop 
         while (self.curr_cand_id_ != self.meSch_base_cand_id):
+            self.pub_px4_100_meSch_base.publish(self.QuadTomeSchbase_msg)
             self.get_logger().info('Waiting for base')  
-            
-
+        
+        self.get_logger().info('meSch_decision_available')
         if (meSch_base_commit_cand_traj != True):
             self.get_logger().info('meSch; Trajectory not committed')
-
             self.mode = "Landing"
             self.CandToSp.cand_mode = self.mode
             self.pub_CandToSp.publish(self.CandToSp)
