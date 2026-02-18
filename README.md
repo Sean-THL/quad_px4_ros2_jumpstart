@@ -8,8 +8,6 @@ This repository is organized as a `colcon` workspace plus launch/config glue to 
 - Vicon data ingestion (`vicon_bridge` from `ros2-vicon-bridge`)
 - Vicon to PX4 visual odometry conversion (`vicon_px4_bridge`)
 
-`meSch` and `eware` are intentionally not documented here, per request.
-
 ## 1) Repository Layout
 
 - `colcon_ws/src/all_launch`: Main launch files and config (`px4.launch.py`, `vicon.launch.py`)
