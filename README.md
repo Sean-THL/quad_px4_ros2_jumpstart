@@ -14,10 +14,18 @@ This repository is organized as a `colcon` workspace plus launch/config glue to 
 - `colcon_ws/src/ros2-vicon-bridge`: ROS 2 package `vicon_bridge` (Vicon SDK client)
 - `colcon_ws/src/vicon_px4_bridge`: ROS 2 package that converts Vicon transforms to PX4 `VehicleOdometry`
 - `colcon_ws/src/px4_msgs`: PX4 ROS message definitions
+- `colcon_ws/src/trajectory_follower`: live analytic and CSV Offboard trajectories
 - `colcon_ws/src/dasc_ros_common/dasc_msgs`: Custom DASC message definitions
 - `colcon_ws/src/dasc_ros_common/dasc_ros_utils`: Utilities (setpoint publishing + helper scripts)
 - `colcon_ws/src/ros2-ping`: Ping/pong latency test nodes
 - `colcon_ws/src/julia_common_exp`: Julia experiment code (not a ROS package)
+
+The recommended no-CSV workflow is documented in
+[`colcon_ws/src/trajectory_follower/README.md`](colcon_ws/src/trajectory_follower/README.md):
+`follow_live` computes each desired state directly, monitors the Vicon-backed
+PX4 local-state error, and leaves the feedback controller in PX4 firmware.
+Its matching Python MeshCat preview is
+`visualization/view_live_trajectory_meshcat.py`.
 
 ## 2) Packages and What They Do
 
@@ -183,20 +191,36 @@ Think of it as: **ROS 2 Vicon transform -> PX4 external vision odometry message*
 - Vicon network reachable from the runtime machine/container
 - Git submodules initialized
 
-Initialize submodules:
-
-```bash
-git submodule update --init --recursive
-```
+For the Python workflow, initialize the ROS submodules using the command in
+Option A below. A full recursive initialization also requests the optional
+Julia repository, which may be inaccessible.
 
 ### Option A: Run with Docker (repo-provided flow)
 
-Build and start container:
+The default Compose service now uses `Dockerfile.python`, which includes ROS 2
+Humble, Micro XRCE-DDS Agent, MAVLink router, and build tools on x86_64. It
+does **not** include Julia/Eware; the original Julia image remains in
+`Dockerfile` for legacy use. No PX4 flight firmware runs in this container.
+The container stays idle until you explicitly launch a ROS node.
+
+Initialize the ROS submodules. The Julia-only `julia_common_exp` submodule is
+not needed for the Python trajectory workflow and may require separate access:
 
 ```bash
-docker compose build
-docker compose up -d
-docker compose exec ros bash
+git submodule update --init --recursive \
+  colcon_ws/src/px4_msgs \
+  colcon_ws/src/ros2-vicon-bridge \
+  colcon_ws/src/vicon_px4_bridge \
+  colcon_ws/src/ros2-ping \
+  colcon_ws/src/dasc_ros_common
+```
+
+Build and start the idle container from the repository root:
+
+```bash
+docker compose build ros
+docker compose up -d ros
+docker compose exec --user "$(id -u):$(id -g)" ros bash
 ```
 
 Note: `docker-compose.yaml` sets `ROS_DOMAIN_ID=4`. Use the same domain on any external ROS 2 machine that needs to communicate with this stack.
@@ -206,15 +230,39 @@ Inside container:
 ```bash
 cd /home/colcon_ws
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install
+colcon build --symlink-install --packages-up-to \
+  all_launch trajectory_follower vicon_bridge vicon_px4_bridge
 source install/setup.bash
 ```
 
-Run the full stack:
+Check that the Python node is installed without connecting to hardware:
+
+```bash
+ros2 pkg executables trajectory_follower
+```
+
+The separate simulation service uses the same ROS domain (`4`). Stop that
+service before connecting hardware, so its topics cannot be mistaken for real
+vehicle state:
+
+```bash
+docker compose -f simulation/docker-compose.yaml stop ros_sim
+```
+
+Only when the real PX4, Vicon network, serial ports, coordinate frames, and
+emergency-stop procedure are ready, launch the physical-data bridge:
 
 ```bash
 ros2 launch all_launch px4.launch.py
 ```
+
+Do not start Eware or another setpoint publisher alongside
+`trajectory_follower`. This launch file opens `/dev/ttyUSB1` and `/dev/ttyUSB0`
+and connects to the configured Vicon server; it does not start PX4 firmware.
+For interactive W/A/S/D control instead of CSV playback, see the separate
+[`teleop_keyboard` workflow](colcon_ws/src/trajectory_follower/README.md#keyboard-manual-teleoperation-separate-node).
+The keyboard node never arms or takes off and must not run alongside
+`follow_csv`.
 
 ### Option B: Run natively on host
 

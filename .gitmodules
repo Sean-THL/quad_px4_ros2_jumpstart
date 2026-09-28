@@ -1,6 +1,6 @@
 [submodule "colcon_ws/src/px4_msgs"]
 	path = colcon_ws/src/px4_msgs
-	url = git@github.com:kalebbennaveed/px4_msgs.git
+	url = https://github.com/Sean-THL/px4_msgs.git
 [submodule "colcon_ws/src/ros2-vicon-bridge"]
 	path = colcon_ws/src/ros2-vicon-bridge
 	url = git@github.com:dasc-lab/ros2-vicon-bridge.git

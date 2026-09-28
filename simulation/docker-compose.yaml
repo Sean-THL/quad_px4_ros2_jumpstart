@@ -1,0 +1,12 @@
+services:
+  ros_sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    environment:
+      ROS_DOMAIN_ID: "4"
+    volumes:
+      - ../colcon_ws:/home/colcon_ws
+      - ./example_trajectory.csv:/home/simulation/example_trajectory.csv:ro
+    command: ["MicroXRCEAgent", "udp4", "-p", "8888"]

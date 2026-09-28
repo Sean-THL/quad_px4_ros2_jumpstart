@@ -1,0 +1,42 @@
+# Python/ROS 2 hardware workflow. The legacy Dockerfile also installs Julia.
+FROM ros:humble-ros-base
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    libboost-all-dev \
+    libsystemd-dev \
+    meson \
+    ninja-build \
+    pkg-config \
+    python3-colcon-common-extensions \
+    python3-pip \
+    ros-humble-diagnostic-updater \
+    ros-humble-std-srvs \
+    ros-humble-tf2-ros \
+    systemd \
+    && rm -rf /var/lib/apt/lists/*
+
+# The original launch file routes MAVLink telemetry through this executable.
+RUN git clone --depth 1 --recurse-submodules \
+    https://github.com/intel/mavlink-router.git /opt/mavlink-router \
+    && meson setup /opt/mavlink-router/build /opt/mavlink-router --buildtype=release \
+    && meson compile -C /opt/mavlink-router/build \
+    && meson install -C /opt/mavlink-router/build
+
+# PX4's serial XRCE client communicates with this ROS 2 agent.
+RUN git clone --depth 1 --branch v2.4.3 \
+    https://github.com/eProsima/Micro-XRCE-DDS-Agent.git /opt/Micro-XRCE-DDS-Agent \
+    && cmake -S /opt/Micro-XRCE-DDS-Agent -B /opt/Micro-XRCE-DDS-Agent/build \
+    -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /opt/Micro-XRCE-DDS-Agent/build --parallel 2 \
+    && cmake --install /opt/Micro-XRCE-DDS-Agent/build \
+    && ldconfig
+
+# px4_msgs generation on ROS Humble expects EmPy 3.x.
+RUN python3 -m pip install --no-cache-dir 'empy==3.3.4'
+
+WORKDIR /home/colcon_ws
