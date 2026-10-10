@@ -95,11 +95,21 @@ ROS launch. `double_spiral` returns to its takeoff **hover** and holds; it
 does not land. `yaw_mode:=velocity` faces horizontal motion and holds the
 previous heading when nearly stopped.
 
-## Record a flight on Orin3
+## Terminal 1: bridge, camera, and recorder
 
 The combined launch starts the PX4/Vicon bridge stack, RealSense camera,
 448×448 crop, and a timestamped rosbag. It records JPEG RGB and lossless PNG
-`compressedDepth` by default:
+`compressedDepth` by default. From your laptop, connect to Orin3 and enter its
+ROS container:
+
+```bash
+ssh ubuntu@192.168.0.9
+cd /home/ubuntu/quad_px4_ros2_jumpstart
+docker compose up -d ros
+docker compose exec ros bash
+```
+
+Inside the container:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -128,10 +138,18 @@ validate the bag afterward.
 Bags go to `/home/colcon_ws/camera/flight_rgbd_YYYYMMDD_HHMMSS` by default.
 Stop recording with `Ctrl-C` **after landing** so rosbag writes its metadata.
 
-## Start the live trajectory
+## Terminal 2: live trajectory
 
-Launch in a **second terminal** in the same ROS container after the
-bridge/camera/recorder is running. This example uses the custom
+Open a **second laptop terminal** and enter the same running container after
+Terminal 1 reports that recording has started:
+
+```bash
+ssh ubuntu@192.168.0.9
+cd /home/ubuntu/quad_px4_ros2_jumpstart
+docker compose exec ros bash
+```
+
+This example uses the custom
 `simple_commander` interface: `commander_set_state` **requires**
 `takeoff_profile:=prearmed_hover`. Check that `takeoff_target_z_m` is an
 appropriate absolute local-NED height; negative Z is upward.
@@ -151,9 +169,13 @@ ros2 launch trajectory_follower follow_live.launch.py \
 ```
 
 Confirm fresh Vicon-backed PX4 position and status, a safe pre-arm target,
-and a clear workspace. Then, from a **third terminal**:
+and a clear workspace. Then open a **third laptop terminal**, enter the same
+container, and call the start service:
 
 ```bash
+ssh ubuntu@192.168.0.9
+cd /home/ubuntu/quad_px4_ros2_jumpstart
+docker compose exec ros bash
 source /opt/ros/humble/setup.bash
 source /home/colcon_ws/install/setup.bash
 ros2 service call /start_live_trajectory std_srvs/srv/Trigger '{}'
