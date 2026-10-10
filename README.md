@@ -1,210 +1,36 @@
 # quad_px4_ros2_jumpstart
 
-ROS 2 workspace for running PX4 with Vicon-based external pose feedback.
+ROS 2 Humble workspace for a PX4 quadrotor using Vicon external-vision pose,
+live Offboard trajectories, and synchronized RealSense RGB-D flight recording.
+The `all_launch`, `trajectory_follower`, and `camera_448` code here was synced
+from the Orin3 workspace. The standalone `PX4-Autopilot` checkout, flashed
+flight-controller firmware, flight bags, and camera test media are **not** in
+this repository. This ROS code does not flash PX4.
 
-This repository is organized as a `colcon` workspace plus launch/config glue to bring up:
-- PX4 DDS bridge (`MicroXRCEAgent`)
-- MAVLink routing (`mavlink-routerd`)
-- Vicon data ingestion (`vicon_bridge` from `ros2-vicon-bridge`)
-- Vicon to PX4 visual odometry conversion (`vicon_px4_bridge`)
+> **Flight safety:** The commands below can arm and move a real vehicle.
+> Preview the path, verify frames and limits, clear the flight area, and keep
+> a tested pilot/GUI takeover and landing procedure ready. The live follower
+> does **not** land automatically. Run only one Offboard setpoint publisher.
 
-## 1) Repository Layout
+## Repository map
 
-- `colcon_ws/src/all_launch`: Main launch files and config (`px4.launch.py`, `vicon.launch.py`)
-- `colcon_ws/src/ros2-vicon-bridge`: ROS 2 package `vicon_bridge` (Vicon SDK client)
-- `colcon_ws/src/vicon_px4_bridge`: ROS 2 package that converts Vicon transforms to PX4 `VehicleOdometry`
-- `colcon_ws/src/px4_msgs`: PX4 ROS message definitions
-- `colcon_ws/src/trajectory_follower`: live analytic and CSV Offboard trajectories
-- `colcon_ws/src/dasc_ros_common/dasc_msgs`: Custom DASC message definitions
-- `colcon_ws/src/dasc_ros_common/dasc_ros_utils`: Utilities (setpoint publishing + helper scripts)
-- `colcon_ws/src/ros2-ping`: Ping/pong latency test nodes
-- `colcon_ws/src/julia_common_exp`: Julia experiment code (not a ROS package)
+| Path | Purpose |
+| --- | --- |
+| `colcon_ws/src/all_launch` | XRCE agent, MAVLink router, Vicon bridge, and Vicon-to-PX4 odometry launch/config |
+| `colcon_ws/src/trajectory_follower` | Analytic live trajectories, CSV follower, and tests |
+| `colcon_ws/src/camera_448` | RealSense D455 448×448 RGB-D crop, combined recorder, bag validator, and two-panel converter |
+| `visualization/view_live_trajectory_meshcat.py` | Hardware-free preview using the live follower's analytic trajectory function |
+| `visualization/` | Additional CSV and bag visualization tools |
 
-The recommended no-CSV workflow is documented in
-[`colcon_ws/src/trajectory_follower/README.md`](colcon_ws/src/trajectory_follower/README.md):
-`follow_live` computes each desired state directly, monitors the Vicon-backed
-PX4 local-state error, and leaves the feedback controller in PX4 firmware.
-Its matching Python MeshCat preview is
-`visualization/view_live_trajectory_meshcat.py`.
+Detailed options: [trajectory follower](colcon_ws/src/trajectory_follower/README.md),
+[camera/recording](colcon_ws/src/camera_448/README.md), and
+[visualization](visualization/README.md).
 
-## 2) Packages and What They Do
+## Setup
 
-### `all_launch`
-Purpose: orchestration package for runtime launch and config.
-
-Contains:
-- `launch/px4.launch.py`: starts PX4-related processes + Vicon pipeline
-- `launch/vicon.launch.py`: starts Vicon bridge + static frame transform
-- `config/config_vicon.yaml`: parameters for `vicon_bridge`
-- `config/mavlink-router.conf`: MAVLink router serial/UDP endpoint config
-
-### `vicon_bridge` (folder: `ros2-vicon-bridge`, package name: `vicon_bridge`)
-Purpose: connects to Vicon DataStream SDK and publishes Vicon poses to ROS 2.
-
-What it publishes:
-- Dynamic TF for subjects/segments
-- Per-segment `geometry_msgs/msg/TransformStamped` on:
-  - `vicon/<subject>/<segment>`
-- Per-segment `geometry_msgs/msg/PoseStamped` on:
-  - `vicon/<subject>/<segment>/pose`
-
-Key behavior:
-- Connects to Vicon host `host_name` (e.g. `192.168.1.115:801`)
-- Supports stream mode `ServerPush` or `ClientPull`
-- Converts Vicon translation mm -> m
-- Applies latency correction to message timestamps
-- Can publish all segments, or one target segment only
-
-In this project, `all_launch/launch/vicon.launch.py` runs executable `vicon_bridge` with parameters from `config_vicon.yaml`.
-
-### `vicon_px4_bridge`
-Purpose: takes Vicon transform data and converts it into PX4 external vision odometry input.
-
-What it subscribes to:
-- `vicon/<vicon_name>/<vicon_name>` (`geometry_msgs/msg/TransformStamped`)
-
-What it publishes:
-- `<px4_name>/fmu/in/vehicle_visual_odometry` (`px4_msgs/msg/VehicleOdometry`)
-
-Key behavior:
-- Frame conversion for PX4 NED-style position:
-  - `x = vicon_y`
-  - `y = vicon_x`
-  - `z = -vicon_z`
-- Yaw conversion:
-  - extracts yaw from Vicon quaternion
-  - converts to NED-style yaw (`-yaw + 1.57`)
-  - publishes yaw-only quaternion (roll/pitch zeroed)
-- Downsamples incoming Vicon callbacks by factor 2
-- Uses local ROS clock timestamp in microseconds (time-sync subscriber code exists but is currently commented)
-
-### `px4_msgs`
-Purpose: ROS 2 message interfaces mirroring PX4 uORB messages.
-
-Used heavily by:
-- `vicon_px4_bridge` (`VehicleOdometry`)
-- `dasc_ros_utils` (`TrajectorySetpoint`, `VehicleLocalPosition`, etc.)
-
-### `dasc_msgs`
-Purpose: custom DASC interfaces for trajectories and mission/status messaging.
-
-Includes messages like:
-- `DITrajectory`, `DITrajectorySimple`, `DIState`, `DIAcc`
-- `CandToSp`, `SpToCand`
-- mission status messages
-
-### `dasc_ros_utils`
-Purpose: helper nodes/scripts for trajectory and setpoint workflows.
-
-Main compiled node:
-- `setpointPublisher`:
-  - subscribes to `dasc_msgs/DITrajectory`
-  - transforms trajectory into PX4 frame via TF2
-  - publishes `px4_msgs/TrajectorySetpoint` to `<px4_robot_name>/fmu/in/trajectory_setpoint`
-
-Installed script:
-- `publish_lab_poly.py` publishes a lab boundary polygon on `lab_polygon`
-
-Other scripts in repo (not installed by CMake, but useful during development):
-- `joystick_goal.py`
-- `joystick_traj.py`
-- `debug_time.py`
-
-### `ping` (folder: `ros2-ping`, package name: `ping`)
-Purpose: measure ROS 2 round-trip timing.
-
-Executables:
-- `ping`
-- `pong`
-- `rt_listener`
-
-Useful for quick network/ROS transport sanity checks.
-
-## 3) Launch Files (Only the Two You Asked For)
-
-### `all_launch/launch/vicon.launch.py`
-Starts:
-1. `vicon_bridge` node
-- package: `vicon_bridge`
-- executable: `vicon_bridge`
-- params loaded from: `all_launch/config/config_vicon.yaml`
-
-2. Static TF publisher (`tf2_ros/static_transform_publisher`)
-- parent frame: `/vicon/world`
-- child frame: `/vicon/world/NED`
-- transform:
-  - translation: `(0, 0, 0)`
-  - roll: `pi`
-  - pitch: `0`
-  - yaw: `pi/2`
-
-Why this matters:
-- Vicon is typically ENU-like / lab-world oriented.
-- PX4 expects NED conventions.
-- This static transform creates a world-to-NED reference frame for downstream consumers.
-
-### `all_launch/launch/px4.launch.py`
-Starts:
-1. `MicroXRCEAgent` process
-- command: `MicroXRCEAgent serial --dev /dev/ttyUSB1 -b 921600`
-- role: DDS-XRCE bridge for PX4 <-> ROS 2 topics
-
-2. `mavlink-routerd` process
-- command: `mavlink-routerd -c <all_launch/config/mavlink-router.conf>`
-- default config routes serial `/dev/ttyUSB0` at `115200` to UDP `192.168.1.138:14550`
-
-3. `vicon_px4_bridge` node
-- package: `vicon_px4_bridge`
-- executable: `bridge`
-- params set in launch:
-  - `px4_name = "px4_100"`
-  - `vicon_name = "px4_100"`
-
-4. Included launch: `all_launch/launch/vicon.launch.py`
-- brings up Vicon input + static world/NED transform
-
-Net effect of `px4.launch.py`:
-- One command starts the full PX4 + Vicon external-vision ingestion pipeline.
-
-## 4) What the Two Bridges Do (Direct Answer)
-
-### What `ros2-vicon bridge` does (`vicon_bridge` package)
-- Connects to Vicon Tracker/DataStream over network.
-- Pulls subject/segment pose data from Vicon SDK.
-- Publishes ROS2 transforms/topics (`TransformStamped`, `PoseStamped`, TF tree).
-- Handles latency-corrected timestamps and configurable stream mode/rates.
-
-Think of it as: **Vicon network data -> ROS 2 pose/TF data**.
-
-### What `vicon-px4 bridge` does (`vicon_px4_bridge` package)
-- Subscribes to a selected Vicon transform topic for one robot.
-- Converts that pose into PX4-compatible `VehicleOdometry` conventions.
-- Publishes to PX4 input topic `.../vehicle_visual_odometry`.
-
-Think of it as: **ROS 2 Vicon transform -> PX4 external vision odometry message**.
-
-## 5) How to Run (End-to-End)
-
-### Prerequisites
-- Ubuntu 22.04 + ROS 2 Humble environment (native), or Docker path below
-- Serial access to PX4 autopilot device(s)
-- Vicon network reachable from the runtime machine/container
-- Git submodules initialized
-
-For the Python workflow, initialize the ROS submodules using the command in
-Option A below. A full recursive initialization also requests the optional
-Julia repository, which may be inaccessible.
-
-### Option A: Run with Docker (repo-provided flow)
-
-The default Compose service now uses `Dockerfile.python`, which includes ROS 2
-Humble, Micro XRCE-DDS Agent, MAVLink router, and build tools on x86_64. It
-does **not** include Julia/Eware; the original Julia image remains in
-`Dockerfile` for legacy use. No PX4 flight firmware runs in this container.
-The container stays idle until you explicitly launch a ROS node.
-
-Initialize the ROS submodules. The Julia-only `julia_common_exp` submodule is
-not needed for the Python trajectory workflow and may require separate access:
+The Orin3 workflow runs in a ROS 2 Humble container with the workspace at
+`/home/colcon_ws`. On a fresh checkout, initialize the ROS submodules; some
+use SSH URLs and require access to their repositories:
 
 ```bash
 git submodule update --init --recursive \
@@ -215,159 +41,148 @@ git submodule update --init --recursive \
   colcon_ws/src/dasc_ros_common
 ```
 
-Build and start the idle container from the repository root:
+The repository's `docker-compose.yaml` supplies an idle ROS 2 container with
+`ROS_DOMAIN_ID=4`. The existing Orin3 container may already have camera
+dependencies installed. The base `Dockerfile.python` does **not** install the
+RealSense ROS driver or all `camera_448` runtime dependencies. For a fresh
+container, install the dependencies in
+[`camera_448/package.xml`](colcon_ws/src/camera_448/package.xml), including
+`realsense2_camera`, `cv_bridge`, OpenCV, and rosbag2. Ensure the container
+can see the camera and both PX4 serial devices.
 
-```bash
-docker compose build ros
-docker compose up -d ros
-docker compose exec --user "$(id -u):$(id -g)" ros bash
-```
-
-Note: `docker-compose.yaml` sets `ROS_DOMAIN_ID=4`. Use the same domain on any external ROS 2 machine that needs to communicate with this stack.
-
-Inside container:
+Inside the prepared ROS container:
 
 ```bash
 cd /home/colcon_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-up-to \
-  all_launch trajectory_follower vicon_bridge vicon_px4_bridge
+  all_launch trajectory_follower camera_448
 source install/setup.bash
 ```
 
-Check that the Python node is installed without connecting to hardware:
+Before connecting hardware, check the site-specific settings:
+
+- [`px4.launch.py`](colcon_ws/src/all_launch/launch/px4.launch.py) uses
+  `px4_201` and XRCE serial `/dev/ttyUSB1` at 921600 baud. `px4_201` must
+  match the Vicon subject/segment and PX4 namespace.
+- [`config_vicon.yaml`](colcon_ws/src/all_launch/config/config_vicon.yaml)
+  contains the Vicon host and segment settings.
+- [`mavlink-router.conf`](colcon_ws/src/all_launch/config/mavlink-router.conf)
+  reads `/dev/ttyUSB0` at 115200 baud and sends telemetry to
+  `192.168.0.12:14550`; adjust this for the actual ground station.
+- Verify the PX4 system ID independently. `allow_unknown_system_id:=true`
+  only permits an unavailable `VehicleStatus.system_id=0`; it does **not**
+  prove that the vehicle is 201.
+
+## Preview a path before flight
+
+From the repository root on a machine with a browser:
 
 ```bash
-ros2 pkg executables trajectory_follower
+python3 -m venv visualization/.venv
+visualization/.venv/bin/python -m pip install -r visualization/requirements.txt
+visualization/.venv/bin/python visualization/view_live_trajectory_meshcat.py \
+  --trajectory-type double_spiral --yaw-mode velocity \
+  --takeoff-profile prearmed_hover --takeoff-target-z-m -0.7 \
+  --flight-duration-s 30.0 --hold-duration-s 2.0 \
+  --spiral-radius-m 0.30 --spiral-turns 1.0 \
+  --spiral-max-height-m 0.30
 ```
 
-The separate simulation service uses the same ROS domain (`4`). Stop that
-service before connecting hardware, so its topics cannot be mistaken for real
-vehicle state:
+The preview shows **commanded** local-NED setpoints, not dynamics, obstacle
+clearance, or estimator behavior. Match flight parameters in the preview and
+ROS launch. `double_spiral` returns to its takeoff **hover** and holds; it
+does not land. `yaw_mode:=velocity` faces horizontal motion and holds the
+previous heading when nearly stopped.
+
+## Record a flight on Orin3
+
+The combined launch starts the PX4/Vicon bridge stack, RealSense camera,
+448×448 crop, and a timestamped rosbag. It records JPEG RGB and lossless PNG
+`compressedDepth` by default:
 
 ```bash
-docker compose -f simulation/docker-compose.yaml stop ros_sim
-```
-
-Only when the real PX4, Vicon network, serial ports, coordinate frames, and
-emergency-stop procedure are ready, launch the physical-data bridge:
-
-```bash
-ros2 launch all_launch px4.launch.py
-```
-
-Do not start Eware or another setpoint publisher alongside
-`trajectory_follower`. This launch file opens `/dev/ttyUSB1` and `/dev/ttyUSB0`
-and connects to the configured Vicon server; it does not start PX4 firmware.
-For interactive W/A/S/D control instead of CSV playback, see the separate
-[`teleop_keyboard` workflow](colcon_ws/src/trajectory_follower/README.md#keyboard-manual-teleoperation-separate-node).
-The keyboard node never arms or takes off and must not run alongside
-`follow_csv`.
-
-### Option B: Run natively on host
-
-Install dependencies similar to Dockerfile:
-- ROS 2 Humble base + dev tools
-- `mavlink-routerd`
-- `MicroXRCEAgent`
-- `libboost-*`, `ros-humble-diagnostic-updater`
-
-Then:
-
-```bash
-cd colcon_ws
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install
-source install/setup.bash
-ros2 launch all_launch px4.launch.py
+source /home/colcon_ws/install/setup.bash
+ros2 launch camera_448 flight_record.launch.py
 ```
 
-## 6) Configuration You Will Almost Certainly Need to Change
-
-### Vicon host
-Edit `colcon_ws/src/all_launch/config/config_vicon.yaml`:
-- `host_name`: Vicon machine IP + `:801`
-- `target_subject_name`/`target_segment_name` if using specific segment mode
-
-### Robot naming consistency
-`px4.launch.py` currently hardcodes `robot_name = "px4_100"` for both:
-- Vicon topic selection in `vicon_px4_bridge`
-- PX4 namespace prefix
-
-This must match:
-- Your Vicon subject/segment names
-- The PX4 namespace exposed by your XRCE setup
-
-### Serial devices and baud
-Current defaults:
-- `MicroXRCEAgent`: `/dev/ttyUSB1` @ `921600`
-- `mavlink-router.conf`: `/dev/ttyUSB0` @ `115200`
-
-Adjust if your device paths differ.
-
-### MAVLink UDP destination
-Edit `colcon_ws/src/all_launch/config/mavlink-router.conf`:
-- `Address = 192.168.1.138`
-- `Port = 14550`
-
-Set to the ground station/consumer IP you use.
-
-## 7) Basic Validation Checklist
-
-After launching `px4.launch.py`, check:
+If `ros2 launch all_launch px4.launch.py` is already running, avoid duplicate
+serial/Vicon processes:
 
 ```bash
-ros2 topic list | rg -E 'vicon|vehicle_visual_odometry|timesync|fmu'
+ros2 launch camera_448 flight_record.launch.py start_px4_stack:=false
 ```
 
-Verify Vicon topic exists (example):
+To record raw and compressed formats together, add
+`record_raw_rgb:=true record_raw_depth:=true`. The four independent flags are
+`record_raw_rgb`, `record_compressed_rgb`, `record_raw_depth`, and
+`record_compressed_depth`; at least one RGB and one depth format must remain
+enabled. The recorder also selects camera calibration, raw Vicon pose, PX4
+local position/odometry, trajectory setpoints, TF, and status/failsafe topics.
+The topic list is in
+[`flight_topics.py`](colcon_ws/src/camera_448/camera_448/flight_topics.py).
+Some selected topics can have zero messages if their publisher is absent;
+validate the bag afterward.
+
+Bags go to `/home/colcon_ws/camera/flight_rgbd_YYYYMMDD_HHMMSS` by default.
+Stop recording with `Ctrl-C` **after landing** so rosbag writes its metadata.
+
+## Start the live trajectory
+
+Launch in a **second terminal** in the same ROS container after the
+bridge/camera/recorder is running. This example uses the custom
+`simple_commander` interface: `commander_set_state` **requires**
+`takeoff_profile:=prearmed_hover`. Check that `takeoff_target_z_m` is an
+appropriate absolute local-NED height; negative Z is upward.
+`takeoff_height_m` applies to the separate `smooth` profile, not this one.
 
 ```bash
-ros2 topic echo /vicon/px4_100/px4_100 --once
+source /opt/ros/humble/setup.bash
+source /home/colcon_ws/install/setup.bash
+ros2 launch trajectory_follower follow_live.launch.py \
+  px4_namespace:=/px4_201 target_system:=201 \
+  allow_unknown_system_id:=true \
+  auto_arm_offboard:=true auto_command_interface:=commander_set_state \
+  takeoff_profile:=prearmed_hover takeoff_target_z_m:=-0.7 \
+  trajectory_type:=double_spiral yaw_mode:=velocity \
+  flight_duration_s:=30.0 hold_duration_s:=2.0 \
+  spiral_radius_m:=0.30 spiral_turns:=1.0 spiral_max_height_m:=0.30
 ```
 
-Verify PX4 odometry injection topic exists:
+Confirm fresh Vicon-backed PX4 position and status, a safe pre-arm target,
+and a clear workspace. Then, from a **third terminal**:
 
 ```bash
-ros2 topic echo /px4_100/fmu/in/vehicle_visual_odometry --once
+source /opt/ros/humble/setup.bash
+source /home/colcon_ws/install/setup.bash
+ros2 service call /start_live_trajectory std_srvs/srv/Trigger '{}'
 ```
 
-Optional TF sanity:
+The service response means activation was accepted, **not** that PX4 is
+already armed or flying. Watch the follower log and vehicle status for
+confirmed Arm, Offboard, hover settling, and path start. The node prestreams
+a hold setpoint before requesting Arm/Offboard. It holds at the path endpoint;
+the pilot/GUI must land and disarm. Do not run another setpoint publisher
+alongside it. See the [follower guide](colcon_ws/src/trajectory_follower/README.md)
+for standard `vehicle_command`, manual GUI mode, other paths, and parameters.
+
+## Check and visualize the bag
+
+After the recorder stops and the bag directory exists:
 
 ```bash
-ros2 run tf2_ros tf2_echo /vicon/world /vicon/world/NED
+ros2 run camera_448 validate_flight_bag \
+  /home/colcon_ws/camera/flight_rgbd_YYYYMMDD_HHMMSS
+ros2 run camera_448 visualize_flight_bag \
+  /home/colcon_ws/camera/flight_rgbd_YYYYMMDD_HHMMSS
 ```
 
-## 8) Common Failure Modes
+The converter writes an MP4 with RealSense RGB on the left and
+Vicon/PX4 actual versus commanded trajectory on the right, plus a path CSV.
+It prefers compressed RGB if both formats were recorded. Depth and TF remain
+in the bag for later analysis; they are not shown in the RGB panel.
 
-- No Vicon data:
-  - wrong `host_name`, network route, firewall, or Vicon stream not running
-- Bridge running but no PX4 odometry consumed:
-  - `px4_name` namespace mismatch
-  - XRCE agent not connected to correct serial device/baud
-- No serial device access in container:
-  - check device presence and permissions (`/dev/ttyUSB*`)
-- Wrong pose orientation in PX4:
-  - verify Vicon frame assumptions and static transform (`world -> world/NED`)
-
-## 9) Useful Commands
-
-Run only Vicon side:
-
-```bash
-ros2 launch all_launch vicon.launch.py
-```
-
-Run only Vicon->PX4 bridge manually:
-
-```bash
-ros2 run vicon_px4_bridge bridge --ros-args -p px4_name:=px4_100 -p vicon_name:=px4_100
-```
-
-Run ROS ping/pong latency test:
-
-```bash
-ros2 run ping pong
-# in another terminal
-ros2 run ping ping
-```
+For troubleshooting, check `ros2 topic list`, serial device names, Vicon
+reachability, ROS domain ID, PX4 namespace/system ID, and the bag validator's
+missing-topic report before attempting another flight.
