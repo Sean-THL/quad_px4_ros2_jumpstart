@@ -8,13 +8,41 @@ every 50 Hz timer tick. The editable path is in
 `figure_eight_offset()`. Its default sequence is:
 
 1. Smooth takeoff from the current PX4 local pose.
-2. One smooth 3D figure eight.
-3. Final hover at the takeoff height.
+2. One selectable smooth path: figure-eight or outward spiral.
+3. Final hover at the selected path's endpoint.
 
-The default horizontal path is already a 1:2 Lissajous figure-eight. An
-alternative `lissajous_figure_eight_offset()` crosses the center at a higher
-altitude instead of making two arches over the lobes. To choose either path,
-comment out one `path = ...` line and uncomment the other in `desired_state()`.
+The default path is a 1:2 Lissajous figure-eight. Select
+`trajectory_type:=figure_eight`, `trajectory_type:=lissajous_figure_eight`,
+`trajectory_type:=spiral`, `trajectory_type:=double_spiral`, or
+`trajectory_type:=offset_spiral` at launch. The original spiral expands
+smoothly from the takeoff hover to `spiral_radius_m` over `spiral_turns`.
+`spiral_max_height_m` is the maximum additional upward height: `0.0` keeps the
+spiral level, while a positive value makes it climb smoothly without
+commanding a downward offset.
+
+`double_spiral` uses those same spiral parameters. It makes `spiral_turns`
+outward turns while climbing, pauses smoothly at the maximum radius/height,
+then makes the same number of inward turns while returning to the takeoff
+hover position. It holds there; it does not descend to the ground or land.
+
+The separate `offset_spiral` is a 3D expanding helix whose left edge remains
+tangent to a fixed local-NED plane. Its `offset_spiral_x_align_m`,
+`offset_spiral_y_center_m`, and `offset_spiral_z0_m` parameters are relative to
+the cruise hover captured at start. A smooth entry reaches the helix's initial
+point without a state jump. `offset_spiral_initial_radius_m`,
+`offset_spiral_max_radius_m`, `offset_spiral_max_height_m`, and
+`offset_spiral_turns` set its limits. Positive max height means upward even
+though PX4 local NED uses negative z upward.
+
+`offset_spiral_alignment_axis:=x` uses the fixed plane `x=x_align` and
+`offset_spiral_y_center_m` as its lateral center. Set the axis to `y` for the
+fixed plane `y=y_align`; that mode uses `offset_spiral_y_align_m` and
+`offset_spiral_x_center_m`. The inactive axis-specific pair is ignored.
+
+Yaw defaults to `yaw_mode:=fixed`, which holds the heading captured at start.
+Set `yaw_mode:=velocity` to command `atan2(vy, vx)` and the corresponding
+analytic yaw rate. When horizontal speed is nearly zero, the follower holds
+the last valid yaw because velocity direction is undefined.
 The MeshCat viewer imports this same function, so preview the selected path
 before building or flying it.
 The launch file also reads its trajectory defaults from `TrajectoryConfig`;
@@ -56,20 +84,80 @@ ros2 service call /start_live_trajectory std_srvs/srv/Trigger '{}'
 ```
 
 Before the service call, confirm that the Vicon-backed position and vehicle
-status are fresh. Only run one Offboard setpoint publisher at a time. Example
+status are fresh. This custom firmware's Arm/Offboard state is read from
+`/fmu/out/commander_status`, the same topic used by the RViz GUI. For that
+firmware, add `auto_command_interface:=commander_set_state` to the launch
+command together with `takeoff_profile:=prearmed_hover`. The follower then
+prestreams the hover-height setpoint before Arm, requests Arm, and requests
+Offboard after Arm is confirmed. It uses the GUI's position-only message
+fields (zero velocity, acceleration, jerk, and timestamp) and waits until the
+hover target is settled before starting the selected path. If the target is
+not settled within 10 seconds after the minimum takeoff wait, it continues
+holding the target and asks the pilot to Land. The default `vehicle_command`
+interface remains available for standard PX4 setups. Only run one Offboard
+setpoint publisher at a time. In `prearmed_hover`, `takeoff_target_z_m` is the
+absolute local-NED Z setpoint, not a climb relative to the current pose. Its
+default is `-0.7` m, matching a GUI target 0.7 m above local zero; the node
+rejects a start if this target is not above the current local Z. The
+`takeoff_height_m` setting applies only to the `smooth` profile. Check the
+signed GUI Z value and PX4 local Z before using this mode. Example
 parameter changes, which affect both the path and its analytic derivatives:
 
 ```bash
 ros2 launch trajectory_follower follow_live.launch.py \
+  trajectory_type:=spiral \
   takeoff_height_m:=0.8 takeoff_duration_s:=4.0 \
-  flight_duration_s:=16.0 north_radius_m:=1.2 east_radius_m:=0.5 \
-  vertical_amplitude_m:=0.1
+  flight_duration_s:=16.0 spiral_radius_m:=0.6 spiral_turns:=2.0 \
+  spiral_max_height_m:=0.3
+```
+
+To return to the takeoff hover using the same limits:
+
+```bash
+ros2 launch trajectory_follower follow_live.launch.py \
+  trajectory_type:=double_spiral yaw_mode:=velocity \
+  takeoff_height_m:=0.5 flight_duration_s:=24.0 \
+  spiral_radius_m:=0.3 spiral_turns:=1.0 spiral_max_height_m:=0.3
+```
+
+Example offset spiral (all x/y/z offsets are relative to the captured cruise
+hover in local NED):
+
+```bash
+ros2 launch trajectory_follower follow_live.launch.py \
+  trajectory_type:=offset_spiral yaw_mode:=velocity \
+  flight_duration_s:=16.0 offset_spiral_entry_duration_s:=2.0 \
+  offset_spiral_initial_radius_m:=0.15 \
+  offset_spiral_max_radius_m:=0.60 \
+  offset_spiral_max_height_m:=0.30 offset_spiral_turns:=2.0 \
+  offset_spiral_x_align_m:=-0.30 \
+  offset_spiral_y_center_m:=0.0 offset_spiral_z0_m:=0.0
+```
+
+Preview the identical path without PX4 using the repository's MeshCat viewer:
+
+```bash
+python3 visualization/view_live_trajectory_meshcat.py \
+  --trajectory-type offset_spiral --yaw-mode velocity \
+  --flight-duration-s 16.0 --offset-spiral-entry-duration-s 2.0 \
+  --offset-spiral-initial-radius-m 0.15 \
+  --offset-spiral-max-radius-m 0.60 \
+  --offset-spiral-max-height-m 0.30 --offset-spiral-turns 2.0 \
+  --offset-spiral-x-align-m -0.30
+```
+
+For an edge perpendicular to the Y-axis, add:
+
+```bash
+--offset-spiral-alignment-axis y \
+--offset-spiral-y-align-m -0.30 \
+--offset-spiral-x-center-m 0.0
 ```
 
 Positive PX4 `z` is down. The path is anchored to the valid pose captured by
 `/start_live_trajectory`, so no absolute launch coordinates or CSV rewrite is
 needed. The service refuses to start without fresh valid local pose/status,
-from an already armed vehicle, or when the reported system ID differs from
+from a vehicle that is not disarmed, or when the reported system ID differs from
 `target_system`. Test new dimensions and durations in MeshCat and simulation
 before flight; parameter validation is not a collision or dynamics check.
 

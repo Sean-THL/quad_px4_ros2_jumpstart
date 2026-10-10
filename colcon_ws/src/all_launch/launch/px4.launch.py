@@ -24,7 +24,7 @@ def generate_launch_description():
             name="mavlink-routerd",
             output='log')
     
-    robot_name = "px4_100"
+    robot_name = "px4_201"
     vicon_px4_bridge_node = Node(
         package='vicon_px4_bridge', executable='bridge', output='screen',
         parameters=[{'px4_name': robot_name, 'vicon_name': robot_name}]

@@ -12,7 +12,7 @@ PACKAGE_ROOT = (Path(__file__).resolve().parents[1] / 'colcon_ws' / 'src' /
 sys.path.insert(0, str(PACKAGE_ROOT))
 
 from trajectory_follower.live_trajectory import (  # noqa: E402
-    TrajectoryConfig, desired_state)
+    TrajectoryConfig, desired_state, velocity_aligned_state)
 
 
 def ned_to_neu(point):
@@ -88,9 +88,13 @@ def visualize(config, fps=30, speed=1.0):
 
     frame_count = math.ceil(config.duration_s * fps / speed) + 1
     playback = animation.Animation(default_framerate=fps)
+    commanded_yaw = 0.0
     for frame in range(frame_count):
         t = min(frame * speed / fps, config.duration_s)
         point = desired_state(t, (0.0, 0.0, 0.0), 0.0, config)
+        if config.yaw_mode == 'velocity':
+            point = velocity_aligned_state(point, commanded_yaw)
+            commanded_yaw = point.yaw
         transform = transformations.translation_matrix(ned_to_neu(point))
         transform = transform @ transformations.rotation_matrix(
             point.yaw, [0, 0, 1])
@@ -112,8 +116,12 @@ def main():
     defaults = TrajectoryConfig()
     parser = argparse.ArgumentParser(description=__doc__)
     for name in TrajectoryConfig.__dataclass_fields__:
-        parser.add_argument('--' + name.replace('_', '-'), type=float,
-                            default=getattr(defaults, name))
+        parser.add_argument(
+            '--' + name.replace('_', '-'),
+            type=str if name in (
+                'trajectory_type', 'yaw_mode', 'takeoff_profile',
+                'offset_spiral_alignment_axis') else float,
+            default=getattr(defaults, name))
     parser.add_argument('--fps', type=int, default=30)
     parser.add_argument('--speed', type=float, default=1.0)
     args = parser.parse_args()
